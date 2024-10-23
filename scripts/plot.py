@@ -1,3 +1,5 @@
+# based on https://github.com/stephenbaek/pyacclaim/tree/main/demo
+
 from pyacclaim import loadASF, loadAMC
 
 import numpy as np

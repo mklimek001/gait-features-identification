@@ -164,7 +164,10 @@ cython_debug/
 
 # Dataset
 /gait3d
-
+/sample_imgs
 
 # https://github.com/CalciferZh/AMCParser.git
 /AMCParser
+
+# mediapipe models from https://ai.google.dev/edge/mediapipe/solutions/vision/pose_landmarker#models
+/mediapipe_models
