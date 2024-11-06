@@ -61,7 +61,7 @@ def draw(asf, amc):
 
     # Setting the axes properties
     ax.view_init(elev=90, azim=90, roll=0)
-    ax.set(xlim3d=(-50, 50), xlabel="X")
+    ax.set(xlim3d=(-150, 150), xlabel="X")
     ax.set(ylim3d=(0, 100), ylabel="Y")
     ax.set(zlim3d=(-50, 50), zlabel="Z")
 
