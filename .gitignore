@@ -164,6 +164,7 @@ cython_debug/
 
 # Dataset
 /gait3d
+/gait3d.zip
 /sample_imgs
 
 # https://github.com/CalciferZh/AMCParser.git
@@ -177,3 +178,6 @@ cython_debug/
 
 # generated videos
 /sample_vids
+/gait3d.zip
+
+/amc2bvh.exe
