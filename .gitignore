@@ -166,6 +166,7 @@ cython_debug/
 /gait3d
 /gait3d.zip
 /sample_imgs
+/gait3d.zip
 
 # https://github.com/CalciferZh/AMCParser.git
 /AMCParser
@@ -180,4 +181,8 @@ cython_debug/
 /sample_vids
 /gait3d.zip
 
+# windows asf/amc to bvh tool
 /amc2bvh.exe
+
+# https://github.com/microsoft/multiview-human-pose-estimation-pytorch.git
+/multiview-human-pose-estimation-pytorch
