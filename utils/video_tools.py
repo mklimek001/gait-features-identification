@@ -1,7 +1,7 @@
 from scripts.parsers import parse_sequences
 import numpy as np
 import mediapipe as mp
-
+import cv2
 
 def get_video_files(sequence_key):
     file_path = './gait3d/ListOfSequences.txt'
@@ -18,10 +18,41 @@ def get_video_files(sequence_key):
     
     return avi_seq_paths
 
+
 def get_camera_calibration_files(sequence_key):
     calibraton_file_path_base = "./gait3d/Sequences/{sequence_key}/Calibration/c{camera_number}.xml"
     camera_file_paths = [calibraton_file_path_base.format(sequence_key=sequence_key, camera_number=c_num) for c_num in range(1, 5)]
     return camera_file_paths
+
+
+def extract_frame(video_path, frame_number, rgb=False):
+    video_capture = cv2.VideoCapture(video_path)
+    if not video_capture.isOpened():
+        print("Error: Could not open video.")
+        return None
+
+    # Printing some video stats
+    total_frames = int(video_capture.get(cv2.CAP_PROP_FRAME_COUNT))
+    print(f"Total number of frames: {total_frames}") 
+    fps = video_capture.get(cv2.CAP_PROP_FPS)
+    print(f"Frames Per Second (FPS): {fps}")
+    frame_width = int(video_capture.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(video_capture.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"Frame Height: {frame_height}, frame Width: {frame_width}")
+    
+    video_capture.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    success, frame = video_capture.read()
+
+    if not success:
+        print(f"Error: Could not read frame {frame_number}.")
+        return None
+
+    video_capture.release()
+
+    if rgb:
+        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+    return frame
 
 
 class MediaPipeEstimator:
@@ -52,7 +83,8 @@ class MediaPipeEstimator:
             x_norm = np.array([frame_landmarks.pose_landmarks[0][i].x for i in range(len(frame_landmarks.pose_landmarks[0]))])
             y_norm = np.array([frame_landmarks.pose_landmarks[0][i].y for i in  range(len(frame_landmarks.pose_landmarks[0]))])
             if len(frame_landmarks.pose_landmarks[0]) != self.landmarks_num:
-                print(f"[Frame {frame_num}] Not all landmarks found!")
+                # print(f"[Frame {frame_num}] Not all landmarks found!")
+                return []
  
             x_frame = frame_w * x_norm
             y_frame = frame_h * y_norm
@@ -61,5 +93,5 @@ class MediaPipeEstimator:
             return points
             
         else:
-            print(f"[Frame {frame_num}] Landmarks not found!")
+            # print(f"[Frame {frame_num}] Landmarks not found!")
             return []
