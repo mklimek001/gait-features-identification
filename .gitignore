@@ -186,3 +186,7 @@ cython_debug/
 
 # https://github.com/microsoft/multiview-human-pose-estimation-pytorch.git
 /multiview-human-pose-estimation-pytorch
+
+
+# datasets with generated output
+/datasets

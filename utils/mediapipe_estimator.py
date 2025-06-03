@@ -40,3 +40,26 @@ class MediaPipeEstimator:
         else:
             print(f"[Frame {frame_num}] Landmarks not found!")
             return []
+    
+    def predict_for_frame_to_dataset(self, frame_num, frame):
+        frame_ts_ms = int(self.frame_duration_ms * frame_num)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=frame)
+        frame_landmarks = self.landmarker.detect_for_video(mp_image, frame_ts_ms)
+
+        frame_h, frame_w, _ = frame.shape
+        
+        if frame_landmarks.pose_landmarks:
+            x_norm = np.array([frame_landmarks.pose_landmarks[0][i].x for i in range(len(frame_landmarks.pose_landmarks[0]))])
+            y_norm = np.array([frame_landmarks.pose_landmarks[0][i].y for i in  range(len(frame_landmarks.pose_landmarks[0]))])
+            
+            x_frame = frame_w * x_norm
+            y_frame = frame_h * y_norm
+
+            norm = list(zip(x_norm, y_norm))
+            pixels = list(zip(np.round(x_frame).astype(int).tolist(), np.round(y_frame).astype(int).tolist()))
+
+            return norm, pixels
+            
+        else:
+            return ([(None, None) for _ in range(self.landmarks_num)], 
+                    [(None, None) for _ in range(self.landmarks_num)])
