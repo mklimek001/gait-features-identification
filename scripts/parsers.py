@@ -4,7 +4,7 @@ def parse_sequences(file_path: str) -> dict:
     sequence_dict = {}
 
     details_pattern = re.compile(
-        r"start frame: (\d+), number of frames: (\d+), frames offset: (\d+), MoCap data: (\w+)"
+        r"start frame: (\d+), number of frames: (\d+), frames offset: (-?\d+), MoCap data: (\w+)"
     )
 
     with open(file_path, 'r') as file:
