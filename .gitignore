@@ -191,3 +191,8 @@ cython_debug/
 # datasets with generated output
 /datasets
 /models
+/plots
+
+# yolo models
+/yolo11n-pose.pt
+/yolo11x-pose.pt

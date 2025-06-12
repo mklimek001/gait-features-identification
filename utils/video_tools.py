@@ -95,3 +95,21 @@ class MediaPipeEstimator:
         else:
             # print(f"[Frame {frame_num}] Landmarks not found!")
             return []
+
+
+def save_frame_to_file(video_path, frame_number, output_image):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        print("Error: Cannot open video file.")
+        exit()
+    
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_number)
+    ret, frame = cap.read()
+    
+    if ret:
+        cv2.imwrite(output_image, frame)
+        print(f"Frame {frame_number} saved as {output_image}")
+    else:
+        print(f"Error: Could not read frame {frame_number}")
+    
+    cap.release()
