@@ -196,3 +196,7 @@ cython_debug/
 # yolo models
 /yolo11n-pose.pt
 /yolo11x-pose.pt
+
+# openpose
+/openpose
+/openpose_output

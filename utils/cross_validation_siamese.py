@@ -4,6 +4,9 @@ from typing import Sequence, Iterable, TypeVar, Tuple
 
 import torch
 import pandas as pd
+import seaborn as sns
+import matplotlib.pyplot as plt
+from matplotlib.colors import LinearSegmentedColormap
 from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import (
@@ -40,13 +43,17 @@ class CVTrainer:
         self._logger = self._get_logger(log_level=log_level)
         self.original_dataset: pd.DataFrame = dataset
         if selected_features is None:
-            self._logger.info("Provided selected_features parameter is None - all features from dataset will be used.")
+            self._logger.info(
+                "Provided selected_features parameter is None - all features from dataset will be used."
+            )
         self.selected_features: Sequence[str] = (
             [col_name for col_name in dataset.columns if col_name != "participant"]
             if selected_features is None
             else selected_features
         )
-        self._logger.info("Number of selected features: %d", len(self.selected_features))
+        self._logger.info(
+            "Number of selected features: %d", len(self.selected_features)
+        )
 
         self.original_participants: Sequence[int] = dataset["participant"]
         self.features_df: pd.DataFrame = dataset.drop(columns=["participant"])[
@@ -195,7 +202,7 @@ class CVTrainer:
 
     def _calculate_confusion_matrix(
         self, y_true: Sequence[bool], y_pred: Sequence[bool]
-    ):
+    ) -> pd.DataFrame:
         """
         Prepare models confusion matrix based on provided results.
         """
@@ -203,6 +210,28 @@ class CVTrainer:
         class_names = ["True", "False"]
         cm_df = pd.DataFrame(cm, index=class_names, columns=class_names)
         self._logger.info("Confusion matrix: \n %s", cm_df)
+        return cm_df
+
+    @staticmethod
+    def _prepare_confusion_matrix_plot(cm_df: pd.DataFrame):
+        assert cm_df.shape == (
+            2,
+            2,
+        ), "Provided dataframe is cannot be interpreted as confusion matrix"
+        sns.heatmap(
+            cm_df,
+            annot=True,
+            fmt="d",
+            cmap=LinearSegmentedColormap.from_list("brownish", ["#f0e5d8", "#54290b"]),
+            annot_kws={"size": 14},
+        )
+        plt.ylabel("Actual", fontsize=12)
+        plt.xlabel("Predicted", fontsize=12)
+        plt.title("Confusion Matrix", fontsize=16)
+
+        plt.tight_layout()
+        plt.savefig("./plots/confusion_matrix_siamese.png")
+        plt.show()
 
     def _calculate_base_metrics(self, y_true: Sequence[bool], y_pred: Sequence[bool]):
         """
@@ -226,7 +255,7 @@ class CVTrainer:
         cumulated_y_true, cumulated_y_pred = [], []
 
         for index, (train, test) in enumerate(self.splits):
-            self._logger.info("Training iteration %d/%d", index, self.splits_numbers)
+            self._logger.info("Training iteration %d/%d", index+1, self.splits_numbers)
             y_true, y_pred = self._single_train_iteration(
                 train_participants=train, test_participants=test
             )
@@ -239,11 +268,12 @@ class CVTrainer:
 
         self._logger.info("Training loop for all folds finished.")
         self._logger.info("Final results: ")
-        self._calculate_confusion_matrix(cumulated_y_true, cumulated_y_pred)
+        cm_df = self._calculate_confusion_matrix(cumulated_y_true, cumulated_y_pred)
         self._calculate_base_metrics(cumulated_y_true, cumulated_y_pred)
+        self._prepare_confusion_matrix_plot(cm_df=cm_df)
 
 
-if __name__=="__main__":
-    gait_df = pd.read_csv('./datasets/gait_features_2.csv')
+if __name__ == "__main__":
+    gait_df = pd.read_csv("./datasets/gait_features_2.csv")
     cv_trainer = CVTrainer(gait_df)
     cv_trainer.run_training()

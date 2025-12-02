@@ -27,11 +27,12 @@ class GaitParametersExtractorV2:
         sequence_parameters: Sequence[Mapping],
         coordintates_idx: CoordinatesIdx = CoordinatesIdx(),
         scale_factor: int = 255,
+        minima_window_size: int = 10,
     ):
         self.seq_params = sequence_parameters
         self.scale_factor = scale_factor
         self.c_idx = coordintates_idx
-        self.l_steps, self.r_steps = self._find_step_frames()
+        self.l_steps, self.r_steps = self._find_step_frames(minima_window_size)
         self.all_steps = sorted(self.l_steps + self.r_steps)
         self.start_position, self.finish_position = (
             self._find_start_and_finish_position()
@@ -75,7 +76,7 @@ class GaitParametersExtractorV2:
 
         return start_position, finish_position
 
-    def _find_step_frames(self) -> Tuple[Sequence, Sequence]:
+    def _find_step_frames(self,  window_size: int = 10) -> Tuple[Sequence, Sequence]:
         """
         Function to find step frames (minimum foot marker position in sequence.
         Output as two lists - first with frames number with left foot steps, second for right foot.
@@ -88,8 +89,8 @@ class GaitParametersExtractorV2:
             frame["rfoot"][self.c_idx.z] * self.scale_factor
             for frame in self.seq_params
         ]
-        left_minima = self.__find_local_minima(lfoot_height_z, 10)
-        right_minima = self.__find_local_minima(rfoot_height_z, 10)
+        left_minima = self.__find_local_minima(lfoot_height_z,  window_size)
+        right_minima = self.__find_local_minima(rfoot_height_z, window_size)
 
         if not self.__check_if_left_right_alternately(left_minima, right_minima):
             # If not left right alternately check without first or last item on list - start and end of sequence might be problematic
