@@ -140,7 +140,12 @@ class CVTrainer:
         return list(set(sequence_1) - set(sequence_2))
 
     def _single_train_iteration(
-        self, train_participants: Sequence[int], test_participants: Sequence[int]
+        self,
+        train_participants: Sequence[int],
+        test_participants: Sequence[int],
+        n_epochs: int = 10,
+        learning_rate: float = 1e-3,
+        batch_size: int = 32,
     ) -> Tuple[Sequence[bool], Sequence[bool]]:
         """
         Single iteration of siamese neural network training with one fold of train-test splits.
@@ -164,13 +169,15 @@ class CVTrainer:
 
         model = SiameseNetwork(input_size=len(self.selected_features))
         criterion = ContrastiveLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         self._logger.info("Siamese neural network model training started...")
 
-        for epoch in range(10):
+        for epoch in range(n_epochs):
             train_dataset.regenerate_pairs()
-            train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, shuffle=True
+            )
 
             model.train()
             train_loss = 0
@@ -233,7 +240,9 @@ class CVTrainer:
         plt.savefig("./plots/confusion_matrix_siamese.png")
         plt.show()
 
-    def _calculate_base_metrics(self, y_true: Sequence[bool], y_pred: Sequence[bool]):
+    def _calculate_base_metrics(
+        self, y_true: Sequence[bool], y_pred: Sequence[bool]
+    ) -> tuple[float, float, float]:
         """
         Calculate models accuracy, precision and recall based on provided results.
         """
@@ -247,17 +256,30 @@ class CVTrainer:
 
         return accuracy, precision, recall
 
-    def run_training(self):
+    def run_training(
+        self,
+        n_epochs: int = 10,
+        learning_rate: float = 1e-3,
+        batch_size: int = 32,
+        show_plot=True,
+    ) -> tuple[float, float, float]:
         """
         Run train loop for all folds.
+        Training will include n_epochs epochs with provided learning rate'
         """
 
         cumulated_y_true, cumulated_y_pred = [], []
 
         for index, (train, test) in enumerate(self.splits):
-            self._logger.info("Training iteration %d/%d", index+1, self.splits_numbers)
+            self._logger.info(
+                "Training iteration %d/%d", index + 1, self.splits_numbers
+            )
             y_true, y_pred = self._single_train_iteration(
-                train_participants=train, test_participants=test
+                train_participants=train,
+                test_participants=test,
+                n_epochs=n_epochs,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
             )
             cumulated_y_true += y_true
             cumulated_y_pred += y_pred
@@ -269,8 +291,12 @@ class CVTrainer:
         self._logger.info("Training loop for all folds finished.")
         self._logger.info("Final results: ")
         cm_df = self._calculate_confusion_matrix(cumulated_y_true, cumulated_y_pred)
-        self._calculate_base_metrics(cumulated_y_true, cumulated_y_pred)
-        self._prepare_confusion_matrix_plot(cm_df=cm_df)
+        accuracy, precision, recall = self._calculate_base_metrics(
+            cumulated_y_true, cumulated_y_pred
+        )
+        if show_plot:
+            self._prepare_confusion_matrix_plot(cm_df=cm_df)
+        return accuracy, precision, recall
 
 
 if __name__ == "__main__":
