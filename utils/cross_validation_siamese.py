@@ -146,6 +146,7 @@ class CVTrainer:
         n_epochs: int = 10,
         learning_rate: float = 1e-3,
         batch_size: int = 32,
+        embedding_size: int = 10,
     ) -> Tuple[Sequence[bool], Sequence[bool]]:
         """
         Single iteration of siamese neural network training with one fold of train-test splits.
@@ -167,7 +168,7 @@ class CVTrainer:
         self._logger.info("Train dataset size: %d", len(train_dataset))
         self._logger.info("Test dataset size: %d", len(test_dataset))
 
-        model = SiameseNetwork(input_size=len(self.selected_features))
+        model = SiameseNetwork(input_size=len(self.selected_features), embedding_size=embedding_size)
         criterion = ContrastiveLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -261,6 +262,7 @@ class CVTrainer:
         n_epochs: int = 10,
         learning_rate: float = 1e-3,
         batch_size: int = 32,
+        embedding_size: int = 10,
         show_plot=True,
     ) -> tuple[float, float, float]:
         """
@@ -280,6 +282,7 @@ class CVTrainer:
                 n_epochs=n_epochs,
                 learning_rate=learning_rate,
                 batch_size=batch_size,
+                embedding_size=embedding_size,
             )
             cumulated_y_true += y_true
             cumulated_y_pred += y_pred
