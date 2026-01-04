@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import Sequence, Iterable, TypeVar, Tuple
+from typing import Sequence, Iterable, TypeVar, Tuple, Literal
 
 import torch
 import pandas as pd
@@ -21,6 +21,9 @@ from utils.torch_siamese import (
     SiameseNetwork,
     ContrastiveLoss,
     compute_similarity,
+    SiameseNetworkCosine,
+    ContrastiveLossCosine,
+    compute_similarity_cosine,
 )
 
 
@@ -147,6 +150,7 @@ class CVTrainer:
         learning_rate: float = 1e-3,
         batch_size: int = 32,
         embedding_size: int = 10,
+        criterion_type: Literal["euclidean", "cosine"] = "euclidean"
     ) -> Tuple[Sequence[bool], Sequence[bool]]:
         """
         Single iteration of siamese neural network training with one fold of train-test splits.
@@ -168,9 +172,14 @@ class CVTrainer:
         self._logger.info("Train dataset size: %d", len(train_dataset))
         self._logger.info("Test dataset size: %d", len(test_dataset))
 
-        model = SiameseNetwork(input_size=len(self.selected_features), embedding_size=embedding_size)
-        criterion = ContrastiveLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        if criterion_type == "euclidean":
+            model = SiameseNetwork(input_size=len(self.selected_features), embedding_size=embedding_size)
+            criterion = ContrastiveLoss()
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        else:
+            model = SiameseNetworkCosine(input_size=len(self.selected_features), embedding_size=embedding_size)
+            criterion = ContrastiveLossCosine()
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         self._logger.info("Siamese neural network model training started...")
 
@@ -202,9 +211,14 @@ class CVTrainer:
 
         for ptcpt_1, ptcpt_2, label in test_dataset.data:
             y_true.append(label.item() == 0)
-            y_pred.append(
-                compute_similarity(ptcpt_1, ptcpt_2, model).item() < threshold
-            )
+            if criterion_type == "euclidean":
+                y_pred.append(
+                    compute_similarity(ptcpt_1, ptcpt_2, model).item() < threshold
+                )
+            else: 
+                y_pred.append(
+                    compute_similarity_cosine(ptcpt_1, ptcpt_2, model).item() < threshold
+                )
 
         return y_true, y_pred
 
@@ -264,6 +278,7 @@ class CVTrainer:
         batch_size: int = 32,
         embedding_size: int = 10,
         show_plot=True,
+        criterion_type: Literal["euclidean", "cosine"] = "euclidean",
     ) -> tuple[float, float, float]:
         """
         Run train loop for all folds.
@@ -283,6 +298,7 @@ class CVTrainer:
                 learning_rate=learning_rate,
                 batch_size=batch_size,
                 embedding_size=embedding_size,
+                criterion_type=criterion_type,
             )
             cumulated_y_true += y_true
             cumulated_y_pred += y_pred

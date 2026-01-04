@@ -136,3 +136,41 @@ def compute_similarity(x1, x2, model):
         out1, out2 = model(x1, x2)
         distance = F.pairwise_distance(out1, out2)
     return distance
+
+
+class SiameseNetworkCosine(nn.Module):
+    def __init__(self, input_size: int = 24, embedding_size: int = 10):
+        super(SiameseNetworkCosine, self).__init__()
+        self.embedding = nn.Sequential(
+            nn.Linear(input_size, 64), nn.ReLU(), nn.Linear(64, embedding_size)
+        )
+
+    def forward_once(self, x):
+        x = self.embedding(x)
+        x = F.normalize(x, p=2, dim=-1)
+        return x
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+
+
+class ContrastiveLossCosine(nn.Module):
+    def __init__(self, margin=0.5):
+        super().__init__()
+        self.margin = margin
+
+    def forward(self, out1, out2, label):
+        cos_sim = F.cosine_similarity(out1, out2, dim=-1)
+
+        loss = torch.mean(
+            (1 - label) * (1 - cos_sim) +
+            label * torch.clamp(cos_sim - self.margin, min=0.0)
+        )
+        return loss
+
+def compute_similarity_cosine(x1, x2, model):
+    model.eval()
+    with torch.no_grad():
+        out1, out2 = model(x1, x2)
+        similarity = 1 - F.cosine_similarity(out1, out2, dim=-1)
+    return similarity
