@@ -137,7 +137,7 @@ class GaitParametersExtractorV2:
         """
         Center of gravity height - distance from center of gravity (center of pelvis) to ground level, diff mean difference between minmum and amximum CoG height during step.
         Lateral pelvic tilt - angle between vertical and line going through hips
-        Pelvis rotatoion - angle between line going from start to end position of the walker, and line going through hips.
+        Pelvis rotation - angle between line going from start to end position of the walker, and line going through hips.
         Output as nine floats - left to right mean diff of CoG height, right to left mean diff of CoG height, total mean diff of CoG height,
         Left to right mean diff of pelvic tilt, right to left mean diff of pelvic tilt, total mean diff of pelvic tilt,
         Mean pelvis rotation for left foot, mean pelvis rotation for right foot, mean pelvis rotation for all steps.

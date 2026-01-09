@@ -3,12 +3,16 @@ import sys
 from typing import Sequence, Iterable, TypeVar, Tuple, Literal
 
 import torch
+import numpy as np
 import pandas as pd
 import seaborn as sns
+from collections import Counter
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 from torch.utils.data import DataLoader
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import (
     confusion_matrix,
     accuracy_score,
@@ -150,7 +154,7 @@ class CVTrainer:
         learning_rate: float = 1e-3,
         batch_size: int = 32,
         embedding_size: int = 10,
-        criterion_type: Literal["euclidean", "cosine"] = "euclidean"
+        criterion_type: Literal["euclidean", "cosine"] = "euclidean",
     ) -> Tuple[Sequence[bool], Sequence[bool]]:
         """
         Single iteration of siamese neural network training with one fold of train-test splits.
@@ -173,11 +177,15 @@ class CVTrainer:
         self._logger.info("Test dataset size: %d", len(test_dataset))
 
         if criterion_type == "euclidean":
-            model = SiameseNetwork(input_size=len(self.selected_features), embedding_size=embedding_size)
+            model = SiameseNetwork(
+                input_size=len(self.selected_features), embedding_size=embedding_size
+            )
             criterion = ContrastiveLoss()
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
         else:
-            model = SiameseNetworkCosine(input_size=len(self.selected_features), embedding_size=embedding_size)
+            model = SiameseNetworkCosine(
+                input_size=len(self.selected_features), embedding_size=embedding_size
+            )
             criterion = ContrastiveLossCosine()
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
@@ -215,9 +223,10 @@ class CVTrainer:
                 y_pred.append(
                     compute_similarity(ptcpt_1, ptcpt_2, model).item() < threshold
                 )
-            else: 
+            else:
                 y_pred.append(
-                    compute_similarity_cosine(ptcpt_1, ptcpt_2, model).item() < threshold
+                    compute_similarity_cosine(ptcpt_1, ptcpt_2, model).item()
+                    < threshold
                 )
 
         return y_true, y_pred
@@ -299,6 +308,193 @@ class CVTrainer:
                 batch_size=batch_size,
                 embedding_size=embedding_size,
                 criterion_type=criterion_type,
+            )
+            cumulated_y_true += y_true
+            cumulated_y_pred += y_pred
+
+            self._logger.info("Iteration results: ")
+            self._calculate_confusion_matrix(y_true, y_pred)
+            self._calculate_base_metrics(y_true, y_pred)
+
+        self._logger.info("Training loop for all folds finished.")
+        self._logger.info("Final results: ")
+        cm_df = self._calculate_confusion_matrix(cumulated_y_true, cumulated_y_pred)
+        accuracy, precision, recall = self._calculate_base_metrics(
+            cumulated_y_true, cumulated_y_pred
+        )
+        if show_plot:
+            self._prepare_confusion_matrix_plot(cm_df=cm_df)
+        return accuracy, precision, recall
+
+    def _single_train_iteration_rank_classification(
+        self,
+        train_participants: Sequence[int],
+        test_participants: Sequence[int],
+        n_epochs: int = 10,
+        learning_rate: float = 1e-3,
+        batch_size: int = 32,
+        embedding_size: int = 10,
+        criterion_type: Literal["euclidean", "cosine"] = "euclidean",
+        k_neighbors: int = 5,
+    ) -> Tuple[Sequence[bool], Sequence[bool]]:
+        """
+        Single iteration of siamese neural network training with one fold of train-test splits.
+        Adjusted for rank-k classification with kNN.
+        """
+
+        train_dataset = SiameseGaitDataset(
+            selected_participants=train_participants,
+            all_participants=self.original_participants,
+            features_scaled_df=self.scaled_features_df,
+        )
+
+        test_dataset = SiameseGaitDataset(
+            selected_participants=test_participants,
+            all_participants=self.original_participants,
+            features_scaled_df=self.scaled_features_df,
+        )
+
+        self._logger.info("Train and test datasets created successfully")
+        self._logger.info("Train dataset size: %d", len(train_dataset))
+        self._logger.info("Test dataset size: %d", len(test_dataset))
+
+        if criterion_type == "euclidean":
+            model = SiameseNetwork(
+                input_size=len(self.selected_features), embedding_size=embedding_size
+            )
+            criterion = ContrastiveLoss()
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+        else:
+            model = SiameseNetworkCosine(
+                input_size=len(self.selected_features), embedding_size=embedding_size
+            )
+            criterion = ContrastiveLossCosine()
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+        self._logger.info("Siamese neural network model training started...")
+
+        for epoch in range(n_epochs):
+            train_dataset.regenerate_pairs()
+            train_loader = DataLoader(
+                train_dataset, batch_size=batch_size, shuffle=True
+            )
+
+            model.train()
+            train_loss = 0
+            for x1, x2, label in train_loader:
+                out1, out2 = model(x1, x2)
+                loss = criterion(out1, out2, label)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+                train_loss += loss.item()
+
+            self._logger.info(
+                "Epoch %d, Train Loss: %.4f", epoch + 1, train_loss / len(train_loader)
+            )
+
+        self._logger.info("Siamese neural network model training finished")
+
+        knn_scaled_features = pd.DataFrame()
+        knn_participants_labels = []
+
+        for participant in test_participants:
+            self._logger.debug("participant: %r", participant)
+            mask = self.original_participants.isin([participant])
+            participant_scaled_features = self.scaled_features_df[mask].reset_index(
+                drop=True
+            )
+            knn_scaled_features = pd.concat(
+                [participant_scaled_features, knn_scaled_features]
+            )
+            knn_participants_labels += [
+                participant for _ in range(len(participant_scaled_features))
+            ]
+
+        knn_scaled_features.reset_index(inplace=True, drop=True)
+        self._logger.debug("Test scaled features = \n%r", knn_scaled_features)
+        self._logger.info("Test scaled features shape = %r", knn_scaled_features.shape)
+        self._logger.debug("Test participants labels: %r", knn_participants_labels)
+        assert knn_scaled_features.shape[0] == len(knn_participants_labels)
+
+        knn_embeddings = []
+
+        for _, row in knn_scaled_features.iterrows():
+            self._logger.debug("Row: %r", row.to_list())
+            row_embedding = model.forward_once(torch.tensor(row.to_list())).tolist()
+            self._logger.debug("Row embedding: %r", row_embedding)
+            knn_embeddings.append(row_embedding)
+
+        self._logger.info(
+            "Obtained embeddings shape = %r",
+            (len(knn_embeddings), len(knn_embeddings[0])),
+        )
+
+        X_train, X_test, y_train, y_test = train_test_split(
+            np.array(knn_embeddings),
+            np.array(knn_participants_labels),
+            test_size=0.4,
+            stratify=np.array(knn_participants_labels),
+            random_state=42,
+        )
+
+        knn = NearestNeighbors(n_neighbors=k_neighbors, metric="euclidean")
+        knn.fit(X_train)
+
+        distances, indices = knn.kneighbors(X_test)
+
+        rank1_correct = 0
+        rank5_correct = 0
+
+        for i, neigh_idx in enumerate(indices):
+            neighbor_labels = y_train[neigh_idx]
+            self._logger.debug("Neighbor labels: %r", neighbor_labels)
+
+            pred_rank1 = Counter(neighbor_labels).most_common(1)[0][0]
+            if pred_rank1 == y_test[i]:
+                rank1_correct += 1
+
+            if y_test[i] in neighbor_labels:
+                rank5_correct += 1
+
+        rank1_acc = rank1_correct / len(y_test)
+        rank5_acc = rank5_correct / len(y_test)
+
+        self._logger.info(f"Rank-1 Accuracy: {rank1_acc:.3f}")
+        self._logger.info(f"Rank-5 Accuracy: {rank5_acc:.3f}")
+
+        return [], []
+
+    def run_training_rank_classification(
+        self,
+        n_epochs: int = 10,
+        learning_rate: float = 1e-3,
+        batch_size: int = 32,
+        embedding_size: int = 10,
+        show_plot=True,
+        criterion_type: Literal["euclidean", "cosine"] = "euclidean",
+        k_neighbors: int = 3,
+    ) -> tuple[float, float, float]:
+        """
+        Run train loop for all folds.
+        Training will include n_epochs epochs with provided learning rate'
+        """
+
+        cumulated_y_true, cumulated_y_pred = [], []
+
+        for index, (train, test) in enumerate(self.splits):
+            self._logger.info(
+                "Training iteration %d/%d", index + 1, self.splits_numbers
+            )
+            y_true, y_pred = self._single_train_iteration_rank_classification(
+                train_participants=train,
+                test_participants=test,
+                n_epochs=n_epochs,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                embedding_size=embedding_size,
+                criterion_type=criterion_type,
+                k_neighbors=k_neighbors,
             )
             cumulated_y_true += y_true
             cumulated_y_pred += y_pred
