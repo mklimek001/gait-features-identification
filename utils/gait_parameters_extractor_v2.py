@@ -28,8 +28,11 @@ class GaitParametersExtractorV2:
         coordintates_idx: CoordinatesIdx = CoordinatesIdx(),
         scale_factor: int = 255,
         minima_window_size: int = 10,
+        running_average_window_size: int = 1,
     ):
-        self.seq_params = sequence_parameters
+        self.seq_params = self._smooth_data(
+            sequence_parameters, window_size=running_average_window_size
+        )
         self.scale_factor = scale_factor
         self.c_idx = coordintates_idx
         self.l_steps, self.r_steps = self._find_step_frames(minima_window_size)
@@ -37,6 +40,45 @@ class GaitParametersExtractorV2:
         self.start_position, self.finish_position = (
             self._find_start_and_finish_position()
         )
+
+    def _smooth_data(
+        self, sequence_parameters: Sequence[Mapping], window_size: int = 1
+    ) -> Sequence[Mapping]:
+        """Smooth sequence parameters data with running average."""
+        if window_size % 2 == 0:
+
+            print(
+                f"Provided window size ({window_size}) is even, bigger window size ({window_size + 1}) will be used instead."
+            )
+            window_size += 1
+
+        if window_size == 1:
+            return sequence_parameters
+
+        margin = window_size // 2
+        smoothed_data = []
+        for idx, frame_parameters in enumerate(sequence_parameters):
+            smoothed_frame = {}
+            frames_window = sequence_parameters[
+                max(0, idx - margin) : min(idx + margin + 1, len(sequence_parameters))
+            ]
+            for joint_name, joint_values in frame_parameters.items():
+                # lfoot, [1,2 3]
+                smoothed_joint_values = []
+                for j in range(len(joint_values)):
+                    smoothed_joint_values.append(
+                        self._mean([frame[joint_name][j] for frame in frames_window])
+                    )
+
+                assert len(smoothed_joint_values) == 3
+                smoothed_frame[joint_name] = smoothed_joint_values
+
+            assert frame_parameters.keys() == smoothed_frame.keys()
+            smoothed_data.append(smoothed_frame)
+
+        assert len(sequence_parameters) == len(smoothed_data)
+
+        return smoothed_data
 
     def _find_start_and_finish_position(
         self,
@@ -76,7 +118,7 @@ class GaitParametersExtractorV2:
 
         return start_position, finish_position
 
-    def _find_step_frames(self,  window_size: int = 10) -> Tuple[Sequence, Sequence]:
+    def _find_step_frames(self, window_size: int = 10) -> Tuple[Sequence, Sequence]:
         """
         Function to find step frames (minimum foot marker position in sequence.
         Output as two lists - first with frames number with left foot steps, second for right foot.
@@ -89,7 +131,7 @@ class GaitParametersExtractorV2:
             frame["rfoot"][self.c_idx.z] * self.scale_factor
             for frame in self.seq_params
         ]
-        left_minima = self.__find_local_minima(lfoot_height_z,  window_size)
+        left_minima = self.__find_local_minima(lfoot_height_z, window_size)
         right_minima = self.__find_local_minima(rfoot_height_z, window_size)
 
         if not self.__check_if_left_right_alternately(left_minima, right_minima):
@@ -128,14 +170,14 @@ class GaitParametersExtractorV2:
                 )
 
         if not self.__check_if_left_right_alternately(left_minima, right_minima):
-            print("Falied to find proper step frame keys")
+            print("Failed to find proper step frame keys")
             return [], []
 
         return left_minima, right_minima
 
     def calculate_pelvic_parameters(self) -> Sequence[float]:
         """
-        Center of gravity height - distance from center of gravity (center of pelvis) to ground level, diff mean difference between minmum and amximum CoG height during step.
+        Center of gravity height - distance from center of gravity (center of pelvis) to ground level, diff mean difference between minimum and maximum CoG height during step.
         Lateral pelvic tilt - angle between vertical and line going through hips
         Pelvis rotation - angle between line going from start to end position of the walker, and line going through hips.
         Output as nine floats - left to right mean diff of CoG height, right to left mean diff of CoG height, total mean diff of CoG height,
@@ -758,14 +800,13 @@ class GaitParametersExtractorV2:
             self._mean(r_max_angle_diff),
             self._mean(l_max_angle_diff + r_max_angle_diff),
         )
-    
+
     def calculate_avg_max_elbow_angle_per_stride(self) -> tuple[float, float, float]:
         """
         Calculate max elbow angle difference for each stride in sequence
         """
         l_angles, r_angles = self.get_l_r_joint_angle("humerus", "radius", "wrist")
         l_max_angle_diff, r_max_angle_diff = [], []
-
 
         for i in range(len(self.l_steps) - 1):
             l_max_angle_diff.append(
