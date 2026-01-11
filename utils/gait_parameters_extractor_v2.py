@@ -527,8 +527,6 @@ class GaitParametersExtractorV2:
 
         return alternately
 
-    import numpy as np
-
     @staticmethod
     def __project_point_on_plane(point, plane_point, plane_normal):
         """
