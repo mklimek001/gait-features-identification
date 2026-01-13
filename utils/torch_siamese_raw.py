@@ -92,9 +92,9 @@ class SiameseNetworkLSTM(nn.Module):
             hidden_size=64,
             num_layers=2,
             batch_first=True,
-            dropout=0.2,
+            dropout=0.3,
         )
-
+        
         self.fc = nn.Linear(64, embedding_size)
 
     def forward_once(self, x):
