@@ -2,21 +2,27 @@ import re
 import logging
 import sys
 import random
+from typing import Mapping, Sequence, Tuple, Literal, Iterator
 
 import torch
 import numpy as np
 import seaborn as sns
 import pandas as pd
 
+from pathlib import Path
 from torch.utils.data import DataLoader
-from typing import Mapping, Sequence, Tuple, Literal, Iterator
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
+from sklearn.manifold import TSNE
 from sklearn.metrics import (
     confusion_matrix,
     accuracy_score,
     precision_score,
     recall_score,
+    precision_recall_curve,
+    roc_curve,
+    auc,
+    average_precision_score,
 )
 
 from utils.gait_parameters_extractor_raw import (
@@ -113,6 +119,78 @@ class CrossValidationSiameseRaw:
         plt.savefig("./plots/confusion_matrix_siamese.png")
         plt.show()
 
+    @staticmethod
+    def _plot_pr_and_roc_curve(
+        y_true_values: Sequence[float],
+        y_pred_values: Sequence[float],
+        show_plot: bool = True,
+    ) -> float:
+        """
+        Function to create two subplots:
+         -  Precision-Recall curve
+         -  ROC curve with AUROC
+
+        Returns calculated Area Under the ROC Curve (AUROC) value.
+        """
+
+        precision, recall, _ = precision_recall_curve(y_true_values, y_pred_values)
+        avg_precision = average_precision_score(y_true_values, y_pred_values)
+
+        fpr, tpr, _ = roc_curve(y_true_values, y_pred_values)
+        roc_auc = auc(fpr, tpr)
+
+        if show_plot:
+            fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+
+            # precision-recall plot
+            axes[0].plot(recall, precision)
+            axes[0].set_xlabel("Recall")
+            axes[0].set_ylabel("Precision")
+            axes[0].set_title(f"Precision-Recall Curve (AP = {avg_precision:.3f})")
+            axes[0].grid(True)
+
+            # ROC plot
+            axes[1].plot(fpr, tpr, label=f"AUROC = {roc_auc:.3f}")
+            axes[1].plot([0, 1], [0, 1], linestyle="--")
+            axes[1].set_xlabel("False Positive Rate")
+            axes[1].set_ylabel("True Positive Rate")
+            axes[1].set_title("ROC Curve")
+            axes[1].legend(loc="lower right")
+            axes[1].grid(True)
+
+            plt.tight_layout()
+            plt.show()
+
+        return roc_auc
+
+    @staticmethod
+    def _prepare_tsne_plot(
+        labels: Sequence[int], embeddings: Sequence[Sequence[float]]
+    ):
+        labels = np.array(labels)
+        embeddings = np.array(embeddings)
+
+        tsne = TSNE(n_components=2, perplexity=10, random_state=42)
+        X_tsne = tsne.fit_transform(embeddings)
+
+        plt.figure(figsize=(8, 6))
+
+        for ptcp in set(labels):
+            plt.scatter(
+                X_tsne[labels == ptcp, 0],
+                X_tsne[labels == ptcp, 1],
+                label=f"Participant {ptcp}",
+                alpha=0.7,
+                s=30,
+            )
+
+        plt.legend()
+        plt.title("t-SNE Visualization")
+        plt.xlabel("t-SNE 1")
+        plt.ylabel("t-SNE 2")
+        plt.tight_layout()
+        plt.show()
+
     def _single_train_iteration(
         self,
         train_dataset: SiameseGaitDatasetRaw,
@@ -120,12 +198,13 @@ class CrossValidationSiameseRaw:
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
+        embedding_size: int = 10,
     ) -> torch.nn.Module:
 
         if siamese_nn_type == "lstm":
-            model = SiameseNetworkLSTM()
+            model = SiameseNetworkLSTM(embedding_size=embedding_size)
         else:
-            model = SiameseNetworkConv1D()
+            model = SiameseNetworkConv1D(embedding_size=embedding_size)
 
         criterion = ContrastiveLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -158,25 +237,40 @@ class CrossValidationSiameseRaw:
         self,
         model: torch.nn.Module,
         test_dataset: SiameseGaitDatasetRaw,
-        threshold: float = 0.5,
     ):
-        y_true = []
-        y_pred = []
+        y_true_values = []
+        y_pred_values = []
 
         for ptcpt_1, ptcpt_2, label in test_dataset.data:
-            y_true.append(label.item() == 0)
-            y_pred.append(
-                compute_similarity(ptcpt_1, ptcpt_2, model).item() < threshold
-            )
+            y_true_values.append(label.item())
+            y_pred_values.append(compute_similarity(ptcpt_1, ptcpt_2, model).item())
 
-        return y_true, y_pred
+        return y_true_values, y_pred_values
+
+    def _single_train_evaluation_with_rank_classification(
+        self,
+        model: torch.nn.Module,
+        test_dataset: SiameseGaitDatasetRaw,
+    ):
+        y_true_values = []
+        y_pred_values = []
+
+        for ptcpt_1, ptcpt_2, label in test_dataset.data:
+            y_true_values.append(label.item())
+            y_pred_values.append(compute_similarity(ptcpt_1, ptcpt_2, model).item())
+
+        return y_true_values, y_pred_values
 
     def _calculate_evaluation_metrics(
         self,
-        y_true: Sequence[float],
-        y_pred: Sequence[float],
+        y_true_values: Sequence[float],
+        y_pred_values: Sequence[float],
+        threshold: float = 0.5,
         show_plot: bool = True,
     ) -> Tuple[float, float, float]:
+
+        y_true = [val == 0 for val in y_true_values]
+        y_pred = [val < threshold for val in y_pred_values]
 
         accuracy = accuracy_score(y_true, y_pred)
         precision = precision_score(y_true, y_pred, zero_division=0)
@@ -225,9 +319,10 @@ class CrossValidationSiameseRaw:
         n_epochs: int = 10,
         threshold: float = 0.5,
         show_plot: bool = True,
+        csv_file_path: Path | str | None = None,
     ):
-        cummulated_y_true = []
-        cummulated_y_pred = []
+        cummulated_y_true_values = []
+        cummulated_y_pred_values = []
 
         iteration = 1
 
@@ -264,20 +359,110 @@ class CrossValidationSiameseRaw:
                 n_epochs=n_epochs,
             )
 
-            y_true, y_pred = self._single_train_evaluation(
+            y_true_values, y_pred_values = self._single_train_evaluation(
                 model=trained_model,
                 test_dataset=test_dataset,
-                threshold=threshold,
             )
 
             self._calculate_evaluation_metrics(
-                y_true=y_true, y_pred=y_pred, show_plot=show_plot
+                y_true_values=y_true_values,
+                y_pred_values=y_pred_values,
+                show_plot=show_plot,
+                threshold=threshold,
             )
 
-            cummulated_y_true += y_true
-            cummulated_y_pred += y_pred
+            cummulated_y_true_values += y_true_values
+            cummulated_y_pred_values += y_pred_values
+
+        if csv_file_path is not None:
+            self._logger.info("Results will be saved to %r", csv_file_path)
+            pd.DataFrame(
+                {
+                    "true": cummulated_y_true_values,
+                    "predicted": cummulated_y_pred_values,
+                }
+            ).to_csv(csv_file_path)
 
         self._logger.info("Combined evaluation")
-        return self._calculate_evaluation_metrics(
-            y_pred=cummulated_y_pred, y_true=cummulated_y_true, show_plot=show_plot
+
+        self._plot_pr_and_roc_curve(
+            y_pred_values=[min(value, 1) for value in cummulated_y_pred_values],
+            y_true_values=cummulated_y_true_values,
+            show_plot=show_plot,
         )
+
+        return self._calculate_evaluation_metrics(
+            y_pred_values=cummulated_y_pred_values,
+            y_true_values=cummulated_y_true_values,
+            show_plot=show_plot,
+            threshold=threshold,
+        )
+
+    def perform_training_with_rank_classification(
+        self,
+        n_folds: int = 5,
+        siamese_nn_type: Literal["conv1d", "lstm"] = "lstm",
+        learning_rate: float = 1e-4,
+        batch_size: int = 32,
+        n_epochs: int = 10,
+        embedding_size: int = 10,
+        show_plot: bool = True,
+        csv_file_path: Path | str | None = None,
+    ):
+
+        iteration = 1
+
+        train_test_folds_iterator = self._prepare_train_test_folds(n_folds)
+        for train_participants, test_participants in train_test_folds_iterator:
+            self._logger.info("[Iteration %r/%r]", iteration, n_folds)
+            iteration += 1
+
+            self._logger.debug("Test fold participants: %r", sorted(test_participants))
+            self._logger.debug(
+                "Train fold participants: %r", sorted(train_participants)
+            )
+
+            train_dataset = SiameseGaitDatasetRaw(
+                selected_participants=train_participants,
+                all_participants=self.participants,
+                features=self.cycles_features,
+            )
+
+            self._logger.info("Train dataset size: %r", len(train_dataset))
+
+            trained_model = self._single_train_iteration(
+                train_dataset=train_dataset,
+                siamese_nn_type=siamese_nn_type,
+                learning_rate=learning_rate,
+                batch_size=batch_size,
+                n_epochs=n_epochs,
+                embedding_size=embedding_size,
+            )
+
+            test_labels = []
+            test_participants_embeddings = []
+
+            for test_participant in test_participants:
+                for idx, tmp_ptcp in enumerate(self.participants):
+                    if tmp_ptcp == test_participant:
+                        test_labels.append(test_participant)
+                        ptcp_features = self.cycles_features[idx]
+                        ptcp_features_tensor = (
+                            torch.from_numpy(ptcp_features.T).float().unsqueeze(0)
+                        )
+                        ptcp_features_embedding = (
+                            trained_model.forward_once(ptcp_features_tensor)
+                            .detach()
+                            .numpy()[0]
+                        )
+                        test_participants_embeddings.append(ptcp_features_embedding)
+
+            for test_label, embedding in zip(test_labels, test_participants_embeddings):
+                self._logger.debug(
+                    "Participant: %r Embedding: %r", test_label, list(embedding)
+                )
+
+            if show_plot:
+                self._prepare_tsne_plot(
+                    labels=test_labels, embeddings=test_participants_embeddings
+                )
