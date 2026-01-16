@@ -23,7 +23,13 @@ from sklearn.metrics import (
     roc_curve,
     auc,
     average_precision_score,
+    top_k_accuracy_score,
 )
+from sklearn.model_selection import StratifiedKFold
+from sklearn.preprocessing import StandardScaler
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.svm import SVC
+from sklearn.neural_network import MLPClassifier
 
 from utils.gait_parameters_extractor_raw import (
     GaitParametersExtractorRaw,
@@ -43,10 +49,11 @@ class CrossValidationSiameseRaw:
         self,
         sequence_cycles: Mapping[str, np.ndarray],
         coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
+        logger_name: str = 'logger',
         log_level: int = logging.DEBUG,
     ):
         self.raw_sequence_cycles = sequence_cycles
-        self._logger = self._get_logger(log_level=log_level)
+        self._logger = self._get_logger(log_level=log_level, name=logger_name)
         participants, cycles_features = self.prepare_cycles_and_participant_labels(
             sequence_cycles, coordinates_idx
         )
@@ -95,6 +102,7 @@ class CrossValidationSiameseRaw:
             )
             handler.setFormatter(formatter)
             logger.addHandler(handler)
+            logging.captureWarnings(True)
 
         return logger
 
@@ -165,12 +173,14 @@ class CrossValidationSiameseRaw:
 
     @staticmethod
     def _prepare_tsne_plot(
-        labels: Sequence[int], embeddings: Sequence[Sequence[float]]
+        labels: Sequence[int],
+        embeddings: Sequence[Sequence[float]],
+        perplexity: int = 10,
     ):
         labels = np.array(labels)
         embeddings = np.array(embeddings)
 
-        tsne = TSNE(n_components=2, perplexity=10, random_state=42)
+        tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
         X_tsne = tsne.fit_transform(embeddings)
 
         plt.figure(figsize=(8, 6))
@@ -194,7 +204,7 @@ class CrossValidationSiameseRaw:
     def _single_train_iteration(
         self,
         train_dataset: SiameseGaitDatasetRaw,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "lstm",
+        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
@@ -313,7 +323,7 @@ class CrossValidationSiameseRaw:
     def perform_training(
         self,
         n_folds: int = 5,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "lstm",
+        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
@@ -383,13 +393,17 @@ class CrossValidationSiameseRaw:
                 }
             ).to_csv(csv_file_path)
 
+        self._logger.info("\n")
         self._logger.info("Combined evaluation")
-
-        self._plot_pr_and_roc_curve(
+        self._logger.info("%s", "*" * 50)
+        
+        auroc = self._plot_pr_and_roc_curve(
             y_pred_values=[min(value, 1) for value in cummulated_y_pred_values],
             y_true_values=cummulated_y_true_values,
             show_plot=show_plot,
         )
+        
+        self._logger.info("Area under ROC curve: %r", auroc)
 
         return self._calculate_evaluation_metrics(
             y_pred_values=cummulated_y_pred_values,
@@ -398,14 +412,81 @@ class CrossValidationSiameseRaw:
             threshold=threshold,
         )
 
+    def perform_rank_classification_cv(
+        self, X: Sequence[Sequence[float]], y: Sequence[int], n_splits: int = 5
+    ) -> Mapping[str, float]:
+        X = np.array(X)
+        y = np.array(y)
+
+        models = {
+            "k-NN": KNeighborsClassifier(n_neighbors=5),
+            "SVM": SVC(probability=True, kernel="rbf"),
+            "MLP": MLPClassifier(
+                hidden_layer_sizes=(64, 32), max_iter=500, random_state=42
+            ),
+        }
+
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
+        results = {}
+
+        self._logger.info("Starting cross-validated model evaluation...")
+        self._logger.info(
+            "%-10s | %-10s | %-10s | %-10s",
+            "Model",
+            "Rank-1",
+            "Rank-2",
+            "Rank-3",
+        )
+        self._logger.info("-" * 50)
+
+        for name, clf in models.items():
+            r1_scores, r2_scores, r3_scores = [], [], []
+
+            for train_idx, test_idx in skf.split(X, y):
+                X_train, X_test = X[train_idx], X[test_idx]
+                y_train, y_test = y[train_idx], y[test_idx]
+
+                # Scale per fold (important!)
+                scaler = StandardScaler()
+                X_train = scaler.fit_transform(X_train)
+                X_test = scaler.transform(X_test)
+
+                clf.fit(X_train, y_train)
+                probs = clf.predict_proba(X_test)
+
+                max_k = len(clf.classes_)
+                r1_scores.append(
+                    top_k_accuracy_score(y_test, probs, k=1, labels=clf.classes_)
+                )
+                r2_scores.append(
+                    top_k_accuracy_score(
+                        y_test, probs, k=min(2, max_k), labels=clf.classes_
+                    )
+                )
+                r3_scores.append(
+                    top_k_accuracy_score(
+                        y_test, probs, k=min(3, max_k), labels=clf.classes_
+                    )
+                )
+
+            r1 = np.mean(r1_scores)
+            r2 = np.mean(r2_scores)
+            r3 = np.mean(r3_scores)
+
+            results[name] = [r1, r2, r3]
+            self._logger.info("%-10s | %.4f     | %.4f     | %.4f", name, r1, r2, r3)
+
+        return results
+
     def perform_training_with_rank_classification(
         self,
         n_folds: int = 5,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "lstm",
+        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
         embedding_size: int = 10,
+        tsne_perplexity: int = 10,
         show_plot: bool = True,
         csv_file_path: Path | str | None = None,
     ):
@@ -413,6 +494,10 @@ class CrossValidationSiameseRaw:
         iteration = 1
 
         train_test_folds_iterator = self._prepare_train_test_folds(n_folds)
+
+        rank_classification_results = []
+        test_sets_sizes = []
+
         for train_participants, test_participants in train_test_folds_iterator:
             self._logger.info("[Iteration %r/%r]", iteration, n_folds)
             iteration += 1
@@ -464,5 +549,53 @@ class CrossValidationSiameseRaw:
 
             if show_plot:
                 self._prepare_tsne_plot(
-                    labels=test_labels, embeddings=test_participants_embeddings
+                    labels=test_labels,
+                    embeddings=test_participants_embeddings,
+                    perplexity=tsne_perplexity,
                 )
+
+            self._logger.info(
+                "Test set size for rank classification: %r", len(test_labels)
+            )
+
+            results = self.perform_rank_classification_cv(
+                X=test_participants_embeddings, y=test_labels
+            )
+
+            rank_classification_results.append(results)
+            test_sets_sizes.append(len(test_labels))
+
+        combined_results = {clf_name: [0, 0, 0] for clf_name in ["k-NN", "SVM", "MLP"]}
+
+        for clsf_results, set_size in zip(rank_classification_results, test_sets_sizes):
+            for clf_name, accuracies in clsf_results.items():
+                for i, accuracy in enumerate(accuracies):
+                    combined_results[clf_name][i] += accuracy * set_size
+
+        self._logger.info("\n")
+        self._logger.info(
+            "Combined results from all folds (calculated with weighted average)"
+        )
+        self._logger.info("%s", "*" * 50)
+        self._logger.info(
+            "%-10s | %-10s | %-10s | %-10s",
+            "Model",
+            "Rank-1",
+            "Rank-2",
+            "Rank-3",
+        )
+        self._logger.info("%s", "-" * 50)
+
+        for clf_name, combined_accuracies in combined_results.items():
+            avg_weighted_accuracies = [
+                acc / sum(test_sets_sizes) for acc in combined_accuracies
+            ]
+            self._logger.info(
+                "%-10s | %.4f     | %.4f     | %.4f",
+                clf_name,
+                avg_weighted_accuracies[0],
+                avg_weighted_accuracies[1],
+                avg_weighted_accuracies[2],
+            )
+
+        self._logger.info("*" * 50)
