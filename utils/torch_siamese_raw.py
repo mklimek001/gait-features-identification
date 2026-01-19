@@ -84,11 +84,11 @@ class SiameseGaitDatasetRaw(Dataset):
 
 
 class SiameseNetworkLSTM(nn.Module):
-    def __init__(self, embedding_size=10):
+    def __init__(self, input_size=16, embedding_size=10):
         super().__init__()
 
         self.lstm = nn.LSTM(
-            input_size=16,
+            input_size=input_size,
             hidden_size=64,
             num_layers=2,
             batch_first=True,
@@ -98,7 +98,7 @@ class SiameseNetworkLSTM(nn.Module):
         self.fc = nn.Linear(64, embedding_size)
 
     def forward_once(self, x):
-        # x: (batch, 32, 16)
+        # x: (batch, 32, input_size)
         _, (h_n, _) = self.lstm(x)
         return self.fc(h_n[-1])
 
@@ -107,12 +107,12 @@ class SiameseNetworkLSTM(nn.Module):
 
 
 class SiameseNetworkConv1D(nn.Module):
-    def __init__(self, embedding_size=10):
+    def __init__(self, input_size=16, embedding_size=10):
         super().__init__()
 
         self.encoder = nn.Sequential(
-            # (batch, 16, 32)
-            nn.Conv1d(in_channels=16, out_channels=64, kernel_size=3, padding=1),
+            # (batch, input_size, 32)
+            nn.Conv1d(in_channels=input_size, out_channels=64, kernel_size=3, padding=1),
             nn.ReLU(),
             nn.Conv1d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -124,8 +124,8 @@ class SiameseNetworkConv1D(nn.Module):
         self.fc = nn.Linear(256, embedding_size)
 
     def forward_once(self, x):
-        # x: (batch, 32, 16)
-        x = x.transpose(1, 2)  # → (batch, 16, 32)
+        # x: (batch, 32, input_size)
+        x = x.transpose(1, 2)  # -> (batch, input_size, 32)
         x = self.encoder(x).squeeze(-1)
         return self.fc(x)
 

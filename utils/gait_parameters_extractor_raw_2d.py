@@ -45,7 +45,7 @@ class GaitParametersExtractorRaw2D:
 
     def __init__(
         self,
-        sequence_parameters: Sequence[Mapping],
+        sequence_parameters: Mapping[str, Sequence],
         selected_joints: Mapping[
             str, str
         ],  # mapping between indexes and selected joint names in frame array
@@ -72,8 +72,8 @@ class GaitParametersExtractorRaw2D:
         )
 
     def _smooth_data(
-        self, sequence_parameters: Sequence[Mapping], window_size: int = 1
-    ) -> Sequence[Mapping]:
+        self, sequence_parameters:  Mapping[str, Sequence], window_size: int = 1
+    ) ->  Mapping[str, Sequence]:
         """Smooth sequence parameters data with running average."""
         if window_size % 2 == 0:
 
