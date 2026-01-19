@@ -117,7 +117,7 @@ class GaitParametersExtractorRaw:
             right_elbow_angles,
         )
 
-    def get_joint_distances(self):
+    def get_joint_distances(self) -> DistanceParameters:
         """
         Calculate distance between pair of joints across gait cycle:
         - Ankle
@@ -138,7 +138,7 @@ class GaitParametersExtractorRaw:
     ) -> PelvicParameters:
         """
         Calculate:
-        - Center of gravity height change - change of distance from center of gravity 
+        - Center of gravity height change - change of distance from center of gravity
           (center of pelvis) to ground level.
         - Lateral pelvic tilt - angle between vertical and line going through hips
         - Pelvis rotation - angle between line going from start to end position of the walker,

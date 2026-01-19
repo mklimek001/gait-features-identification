@@ -29,6 +29,8 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
+from sklearn.linear_model import LogisticRegression
+from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
 
 from utils.gait_parameters_extractor_raw import (
@@ -49,7 +51,7 @@ class CrossValidationSiameseRaw:
         self,
         sequence_cycles: Mapping[str, np.ndarray],
         coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
-        logger_name: str = 'logger',
+        logger_name: str = "logger",
         log_level: int = logging.DEBUG,
     ):
         self.raw_sequence_cycles = sequence_cycles
@@ -328,6 +330,7 @@ class CrossValidationSiameseRaw:
         batch_size: int = 32,
         n_epochs: int = 10,
         threshold: float = 0.5,
+        embedding_size: int = 10,
         show_plot: bool = True,
         csv_file_path: Path | str | None = None,
     ):
@@ -367,6 +370,7 @@ class CrossValidationSiameseRaw:
                 learning_rate=learning_rate,
                 batch_size=batch_size,
                 n_epochs=n_epochs,
+                embedding_size=embedding_size,
             )
 
             y_true_values, y_pred_values = self._single_train_evaluation(
@@ -396,21 +400,32 @@ class CrossValidationSiameseRaw:
         self._logger.info("\n")
         self._logger.info("Combined evaluation")
         self._logger.info("%s", "*" * 50)
-        
+
         auroc = self._plot_pr_and_roc_curve(
             y_pred_values=[min(value, 1) for value in cummulated_y_pred_values],
             y_true_values=cummulated_y_true_values,
             show_plot=show_plot,
         )
-        
+
         self._logger.info("Area under ROC curve: %r", auroc)
 
-        return self._calculate_evaluation_metrics(
+        accuracy, precision, recall = self._calculate_evaluation_metrics(
             y_pred_values=cummulated_y_pred_values,
             y_true_values=cummulated_y_true_values,
             show_plot=show_plot,
             threshold=threshold,
         )
+
+        self._logger.info("& accuracy & precision &  recall  &   auroc  ")
+        self._logger.info(
+            "& %.2f    & %.2f     & %.2f     & %.2f",
+            accuracy * 100,
+            precision * 100,
+            recall * 100,
+            auroc * 100,
+        )
+
+        return accuracy, precision, recall, auroc
 
     def perform_rank_classification_cv(
         self, X: Sequence[Sequence[float]], y: Sequence[int], n_splits: int = 5
@@ -419,11 +434,14 @@ class CrossValidationSiameseRaw:
         y = np.array(y)
 
         models = {
-            "k-NN": KNeighborsClassifier(n_neighbors=5),
+            "k-NN eucl": KNeighborsClassifier(n_neighbors=5, metric="euclidean"),
+            "k-NN manh": KNeighborsClassifier(n_neighbors=5, metric="manhattan"),
             "SVM": SVC(probability=True, kernel="rbf"),
             "MLP": MLPClassifier(
                 hidden_layer_sizes=(64, 32), max_iter=500, random_state=42
             ),
+            "NB": GaussianNB(),
+            "LR": LogisticRegression(),
         }
 
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
@@ -431,13 +449,13 @@ class CrossValidationSiameseRaw:
 
         self._logger.info("Starting cross-validated model evaluation...")
         self._logger.info(
-            "%-10s | %-10s | %-10s | %-10s",
+            "%-12s | %-10s | %-10s | %-10s",
             "Model",
             "Rank-1",
             "Rank-2",
             "Rank-3",
         )
-        self._logger.info("-" * 50)
+        self._logger.info("-" * 55)
 
         for name, clf in models.items():
             r1_scores, r2_scores, r3_scores = [], [], []
@@ -474,7 +492,7 @@ class CrossValidationSiameseRaw:
             r3 = np.mean(r3_scores)
 
             results[name] = [r1, r2, r3]
-            self._logger.info("%-10s | %.4f     | %.4f     | %.4f", name, r1, r2, r3)
+            self._logger.info("%-12s | %.4f     | %.4f     | %.4f", name, r1, r2, r3)
 
         return results
 
@@ -565,7 +583,17 @@ class CrossValidationSiameseRaw:
             rank_classification_results.append(results)
             test_sets_sizes.append(len(test_labels))
 
-        combined_results = {clf_name: [0, 0, 0] for clf_name in ["k-NN", "SVM", "MLP"]}
+        combined_results = {
+            clf_name: [0, 0, 0]
+            for clf_name in [
+                "k-NN eucl",
+                "k-NN manh",
+                "SVM",
+                "MLP",
+                "NB",
+                "LR",
+            ]
+        }
 
         for clsf_results, set_size in zip(rank_classification_results, test_sets_sizes):
             for clf_name, accuracies in clsf_results.items():
@@ -578,7 +606,7 @@ class CrossValidationSiameseRaw:
         )
         self._logger.info("%s", "*" * 50)
         self._logger.info(
-            "%-10s | %-10s | %-10s | %-10s",
+            "%-10s & %-10s & %-10s & %-10s",
             "Model",
             "Rank-1",
             "Rank-2",
@@ -588,10 +616,11 @@ class CrossValidationSiameseRaw:
 
         for clf_name, combined_accuracies in combined_results.items():
             avg_weighted_accuracies = [
-                acc / sum(test_sets_sizes) for acc in combined_accuracies
+                100 * acc / sum(test_sets_sizes) for acc in combined_accuracies
             ]
+            # converted to % and format easier to use in overleaf
             self._logger.info(
-                "%-10s | %.4f     | %.4f     | %.4f",
+                "%-10s & %.2f      & %.2f      & %.2f",
                 clf_name,
                 avg_weighted_accuracies[0],
                 avg_weighted_accuracies[1],
