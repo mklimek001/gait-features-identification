@@ -51,22 +51,27 @@ class CrossValidationSiameseRaw:
         self,
         sequence_cycles: Mapping[str, np.ndarray],
         coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
+        involve_hands_parameters: bool = True,
         logger_name: str = "logger",
         log_level: int = logging.DEBUG,
     ):
         self.raw_sequence_cycles = sequence_cycles
         self._logger = self._get_logger(log_level=log_level, name=logger_name)
-        participants, cycles_features = self.prepare_cycles_and_participant_labels(
-            sequence_cycles, coordinates_idx
+        participants, cycles_features, features_number = (
+            self.prepare_cycles_and_participant_labels(
+                sequence_cycles, coordinates_idx, involve_hands_parameters
+            )
         )
         self.participants = participants
         self.cycles_features = cycles_features
+        self.features_number = features_number
 
     def prepare_cycles_and_participant_labels(
         self,
         sequence_cycles: Mapping[str, np.ndarray],
         coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
-    ) -> Tuple[Sequence[int], Sequence[np.ndarray]]:
+        involve_hands_parameters: bool = True,
+    ) -> Tuple[Sequence[int], Sequence[np.ndarray], int]:
 
         self._logger.info("Preparing cycles and participant labels...")
 
@@ -78,14 +83,22 @@ class CrossValidationSiameseRaw:
             gpe_raw = GaitParametersExtractorRaw(
                 sequence_joint_positions, coordinates_idx=coordinates_idx
             )
-            sequence_parameters = gpe_raw.get_gait_parameters()
+            if involve_hands_parameters:
+                sequence_parameters = gpe_raw.get_gait_parameters()
+            else:
+                sequence_parameters = gpe_raw.get_gait_parameters_wo_hands()
             match = re.search(pattern, sequence_key)
             participant, _, _ = match.groups()
 
             combined_participants.append(int(participant))
             combined_sequences_parameters.append(sequence_parameters)
 
-        return combined_participants, combined_sequences_parameters
+        if involve_hands_parameters:
+            parameters_number = len(gpe_raw.get_gait_parameters_names())
+        else:
+            parameters_number = len(gpe_raw.get_gait_parameters_names_wo_hands())
+
+        return combined_participants, combined_sequences_parameters, parameters_number
 
     def count_participants_samples(self):
         for i in range(1, 33):
@@ -214,9 +227,13 @@ class CrossValidationSiameseRaw:
     ) -> torch.nn.Module:
 
         if siamese_nn_type == "lstm":
-            model = SiameseNetworkLSTM(embedding_size=embedding_size)
+            model = SiameseNetworkLSTM(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
         else:
-            model = SiameseNetworkConv1D(embedding_size=embedding_size)
+            model = SiameseNetworkConv1D(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
 
         criterion = ContrastiveLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -353,12 +370,14 @@ class CrossValidationSiameseRaw:
                 selected_participants=train_participants,
                 all_participants=self.participants,
                 features=self.cycles_features,
+                feature_dim=self.features_number,
             )
 
             test_dataset = SiameseGaitDatasetRaw(
                 selected_participants=test_participants,
                 all_participants=self.participants,
                 features=self.cycles_features,
+                feature_dim=self.features_number,
             )
 
             self._logger.info("Train dataset size: %r", len(train_dataset))

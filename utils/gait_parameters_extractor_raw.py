@@ -36,9 +36,6 @@ class GaitParametersExtractorRaw:
     Class to extract basic gait parameters based on single gait cycle.
     """
 
-    FPS = 25
-    FRAME_TIME = 1 / FPS
-
     def __init__(
         self,
         sequence_parameters: Sequence[Mapping],
@@ -65,6 +62,31 @@ class GaitParametersExtractorRaw:
             ]
         )
 
+    def get_gait_parameters_wo_hands(self) -> np.array:
+        """
+        Get gait parameters as numpy array, ready to use as input to neural network.
+        Select only parameters without hands (not involving elbows and wrists markers).
+        """
+
+        gait_angles = self.get_gait_angles()
+        joint_distances = self.get_joint_distances()
+        pelvic_parameters = self.get_pelvic_parameters()
+
+        return np.array(
+            [
+                gait_angles.left_hip_angles,
+                gait_angles.right_hip_angles,
+                gait_angles.right_knee_angles,
+                gait_angles.left_knee_angles,
+                gait_angles.legs_angles,
+                joint_distances.ankle_distances,
+                joint_distances.knee_distances,
+                pelvic_parameters.center_of_gravity_height_change,
+                pelvic_parameters.lateral_pelvic_tilt,
+                pelvic_parameters.pelvis_rotation,
+            ]
+        )
+
     def get_gait_parameters_names(self) -> Sequence[str]:
         """
         Get gait parameters names in same order as in results of
@@ -76,6 +98,25 @@ class GaitParametersExtractorRaw:
             *GaitAngles._fields,
             *DistanceParameters._fields,
             *PelvicParameters._fields,
+        ]
+
+    def get_gait_parameters_names_wo_hands(self) -> np.array:
+        """
+        Get gait parameters as numpy array, ready to use as input to neural network.
+        Select only parameters without hands (not involving elbows and wrists markers).
+        """
+
+        return [
+            "left_hip_angles",
+            "right_hip_angles",
+            "right_knee_angles",
+            "left_knee_angles",
+            "legs_angles",
+            "ankle_distances",
+            "knee_distances",
+            "center_of_gravity_height_change",
+            "lateral_pelvic_tilt",
+            "pelvis_rotation",
         ]
 
     def get_gait_angles(self) -> GaitAngles:
@@ -105,7 +146,7 @@ class GaitParametersExtractorRaw:
         #    "tibia", "foot", "toes"
         # )
 
-        return (
+        return GaitAngles(
             legs_angles,
             left_knee_angles,
             right_knee_angles,
@@ -131,7 +172,9 @@ class GaitParametersExtractorRaw:
         elbow_distances = self._get_l_r_joint_distance("radius")
         hand_distances = self._get_l_r_joint_distance("wrist")
 
-        return ankle_distances, knee_distances, elbow_distances, hand_distances
+        return DistanceParameters(
+            ankle_distances, knee_distances, elbow_distances, hand_distances
+        )
 
     def get_pelvic_parameters(
         self,
@@ -206,7 +249,9 @@ class GaitParametersExtractorRaw:
                 )
             )
 
-        return center_of_gravity_height_change, lateral_pelvic_tilt, pelvis_rotation
+        return PelvicParameters(
+            center_of_gravity_height_change, lateral_pelvic_tilt, pelvis_rotation
+        )
 
     def _find_start_and_finish_position(
         self,

@@ -67,13 +67,36 @@ class GaitParametersExtractorRaw2D:
             [
                 *self.get_gait_angles(),
                 *self.get_joint_distances(),
-                self.get_pelvic_parameters(),
+                *self.get_pelvic_parameters(),
+            ]
+        )
+
+    def get_gait_parameters_wo_hands(self) -> np.array:
+        """
+        Get gait parameters as numpy array, ready to use as input to neural network.
+        Select only parameters without hands (not involving elbows and wrists markers).
+        """
+
+        gait_angles = self.get_gait_angles()
+        joint_distances = self.get_joint_distances()
+        pelvic_parameters = self.get_pelvic_parameters()
+
+        return np.array(
+            [
+                gait_angles.left_hip_angles,
+                gait_angles.right_hip_angles,
+                gait_angles.right_knee_angles,
+                gait_angles.left_knee_angles,
+                gait_angles.legs_angles,
+                joint_distances.ankle_distances,
+                joint_distances.knee_distances,
+                pelvic_parameters.center_of_gravity_height_change,
             ]
         )
 
     def _smooth_data(
-        self, sequence_parameters:  Mapping[str, Sequence], window_size: int = 1
-    ) ->  Mapping[str, Sequence]:
+        self, sequence_parameters: Mapping[str, Sequence], window_size: int = 1
+    ) -> Mapping[str, Sequence]:
         """Smooth sequence parameters data with running average."""
         if window_size % 2 == 0:
 
@@ -89,7 +112,7 @@ class GaitParametersExtractorRaw2D:
         smoothed_data = {}
         for idx, _ in sequence_parameters.items():
             smoothed_frame = []
-            
+
             frames_window = list(sequence_parameters.values())[
                 max(0, int(idx) - margin) : min(
                     int(idx) + margin + 1, len(sequence_parameters)
@@ -97,10 +120,12 @@ class GaitParametersExtractorRaw2D:
             ]
 
             for i in range(len(frames_window[0])):
-                smoothed_frame.append([
-                    self._mean([frame[i][0] for frame in frames_window]),
-                    self._mean([frame[i][1] for frame in frames_window]),
-                ])
+                smoothed_frame.append(
+                    [
+                        self._mean([frame[i][0] for frame in frames_window]),
+                        self._mean([frame[i][1] for frame in frames_window]),
+                    ]
+                )
 
             smoothed_data[idx] = smoothed_frame
 
@@ -182,6 +207,23 @@ class GaitParametersExtractorRaw2D:
             *PelvicParameters2D._fields,
         ]
 
+    def get_gait_parameters_names_wo_hands(self) -> np.array:
+        """
+        Get gait parameters as numpy array, ready to use as input to neural network.
+        Select only parameters without hands (not involving elbows and wrists markers).
+        """
+
+        return [
+            "left_hip_angles",
+            "right_hip_angles",
+            "right_knee_angles",
+            "left_knee_angles",
+            "legs_angles",
+            "ankle_distances",
+            "knee_distances",
+            "center_of_gravity_height_change",
+        ]
+
     def get_gait_angles(self) -> GaitAngles2D:
         """
         Calculate vector of angles in each frame of gait cycle:
@@ -209,7 +251,7 @@ class GaitParametersExtractorRaw2D:
         #    "tibia", "foot", "toes"
         # )
 
-        return (
+        return GaitAngles2D(
             legs_angles,
             left_knee_angles,
             right_knee_angles,
@@ -235,7 +277,9 @@ class GaitParametersExtractorRaw2D:
         elbow_distances = self._get_l_r_joint_distance("radius")
         hand_distances = self._get_l_r_joint_distance("wrist")
 
-        return ankle_distances, knee_distances, elbow_distances, hand_distances
+        return DistanceParameters2D(
+            ankle_distances, knee_distances, elbow_distances, hand_distances
+        )
 
     def get_pelvic_parameters(
         self,
@@ -259,7 +303,7 @@ class GaitParametersExtractorRaw2D:
             for i in range(1, len(center_of_gravity_height))
         ]
 
-        return center_of_gravity_height_change
+        return PelvicParameters2D(center_of_gravity_height_change)
 
     def _calculate_angle_between_joints(
         self,
