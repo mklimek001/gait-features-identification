@@ -41,13 +41,55 @@ class GaitParametersExtractorRaw:
         sequence_parameters: Sequence[Mapping],
         coordinates_idx: CoordinatesIdx = CoordinatesIdx(),
         scale_factor: int = 255,
+        running_average_window_size: int = 1,
     ):
-        self.seq_params = sequence_parameters
+        self.seq_params = self._smooth_data(
+            sequence_parameters, window_size=running_average_window_size
+        )
         self.scale_factor = scale_factor
         self.c_idx = coordinates_idx
         self.start_position, self.finish_position = (
             self._find_start_and_finish_position()
         )
+
+    def _smooth_data(
+        self, sequence_parameters: Sequence[Mapping], window_size: int = 1
+    ) -> Sequence[Mapping]:
+        """Smooth sequence parameters data with running average."""
+        if window_size % 2 == 0:
+
+            print(
+                f"Provided window size ({window_size}) is even, bigger window size ({window_size + 1}) will be used instead."
+            )
+            window_size += 1
+
+        if window_size == 1:
+            return sequence_parameters
+
+        margin = window_size // 2
+        smoothed_data = []
+        for idx, frame_parameters in enumerate(sequence_parameters):
+            smoothed_frame = {}
+            frames_window = sequence_parameters[
+                max(0, idx - margin) : min(idx + margin + 1, len(sequence_parameters))
+            ]
+            for joint_name, joint_values in frame_parameters.items():
+                # lfoot, [1,2 3]
+                smoothed_joint_values = []
+                for j in range(len(joint_values)):
+                    smoothed_joint_values.append(
+                        self._mean([frame[joint_name][j] for frame in frames_window])
+                    )
+
+                assert len(smoothed_joint_values) == 3
+                smoothed_frame[joint_name] = smoothed_joint_values
+
+            assert frame_parameters.keys() == smoothed_frame.keys()
+            smoothed_data.append(smoothed_frame)
+
+        assert len(sequence_parameters) == len(smoothed_data)
+
+        return smoothed_data
 
     def get_gait_parameters(self) -> np.array:
         """
@@ -290,6 +332,10 @@ class GaitParametersExtractorRaw:
         )
 
         return start_position, finish_position
+
+    @staticmethod
+    def _mean(sequence: list) -> float:
+        return sum(sequence) / len(sequence)
 
     @staticmethod
     def __project_point_on_plane(point, plane_point, plane_normal):

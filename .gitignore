@@ -195,10 +195,12 @@ cython_debug/
 
 # results
 /results
+/runs
 
 # yolo models
 /yolo11n-pose.pt
 /yolo11x-pose.pt
+/yolo26x-pose.pt
 
 # openpose
 /openpose

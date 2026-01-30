@@ -1,6 +1,7 @@
 import math
 import numpy as np
 from typing import Sequence, Mapping, Tuple
+from scipy.signal import butter, lfilter, filtfilt
 from utils.gait_parameters_extractor import (
     CoordinatesIdx,
     StepsNotFoundException,
@@ -79,6 +80,79 @@ class GaitParametersExtractorV2:
         assert len(sequence_parameters) == len(smoothed_data)
 
         return smoothed_data
+    
+    def _smooth_data_butterworth(
+        self, sequence_parameters: Sequence[Mapping], window_size: int = 1
+    ) -> Sequence[Mapping]:
+        """Smooth sequence parameters data with butterworth filter."""
+        if window_size % 2 == 0:
+
+            print(
+                f"Provided window size ({window_size}) is even, bigger window size ({window_size + 1}) will be used instead."
+            )
+            window_size += 1
+
+        if window_size == 1:
+            return sequence_parameters
+
+        margin = window_size // 2
+        smoothed_data = []
+        for idx, frame_parameters in enumerate(sequence_parameters):
+            smoothed_frame = {}
+            frames_window = sequence_parameters[
+                max(0, idx - margin) : min(idx + margin + 1, len(sequence_parameters))
+            ]
+            for joint_name, joint_values in frame_parameters.items():
+                # lfoot, [1,2 3]
+                smoothed_joint_values = []
+                for j in range(len(joint_values)):
+                    smoothed_joint_values.append(
+                        self._mean([frame[joint_name][j] for frame in frames_window])
+                    )
+
+                assert len(smoothed_joint_values) == 3
+                smoothed_frame[joint_name] = smoothed_joint_values
+
+            assert frame_parameters.keys() == smoothed_frame.keys()
+            smoothed_data.append(smoothed_frame)
+
+        assert len(sequence_parameters) == len(smoothed_data)
+
+        return smoothed_data
+    
+    @classmethod
+    def _butterworth_filter(raw_data: np.ndarray, cutoff_frequency: int = 5) -> np.ndarray:
+        """
+        Butterworth filter applied to 
+        
+        :param raw_data: Raw data
+        :type raw_data: np.ndarray
+        :param cutoff_frequency: cutoff frequency at which input filter is about to be filtered
+        :type cutoff_frequency: int
+        :return: filtered data
+        :rtype: np.ndarray
+        """
+
+        order = 2
+        fs = 200
+        T = 1    
+        t = np.linspace(0, T, int(fs * T), endpoint=False) 
+
+        #Butterworth low pass filter 
+        b, a = butter(order, [cutoff_frequency / (fs / 2)], btype='low',analog=False)
+        #b -> Numerator polynomial coefficients of filter transfer function
+        #a -> Denominator polynomial coefficients of filter transfer function
+        #to get a zerophase distortion, this filter is applied. In this operation both
+        #forward and backward filter is applied
+        filtered_signal = filtfilt(b,a,raw_data)
+
+        #As the low pass filter reduces the amplitude of the filtered signal;
+        #to ensure amplitude remains consistent it should be multiplied with a
+        #scale factor
+        scale_factor = 5/max(abs(filtered_signal))
+        filtered_signal = filtered_signal * scale_factor
+
+        return filtered_signal
 
     def _find_start_and_finish_position(
         self,
