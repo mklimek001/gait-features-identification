@@ -328,7 +328,7 @@ class CrossValidationSiameseRaw:
         random.shuffle(participants)
         test_folds = [[] for _ in range(folds)]
         for idx, item in enumerate(participants):
-            test_folds[idx % 5].append(item)
+            test_folds[idx % folds].append(item)
 
         train_folds = [
             [i for i in range(1, 33) if not i in test_fold] for test_fold in test_folds
