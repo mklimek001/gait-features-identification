@@ -1,7 +1,9 @@
 import math
+from copy import deepcopy
 from typing import Sequence, Mapping, Tuple, NamedTuple
 from dataclasses import dataclass, field, fields
 import numpy as np
+from scipy.signal import butter, filtfilt
 
 
 @dataclass
@@ -50,10 +52,15 @@ class GaitParametersExtractorRaw2D:
             str, str
         ],  # mapping between indexes and selected joint names in frame array
         coordinates_idx: CoordinatesIdx2D = CoordinatesIdx2D(),
-        window_size: int = 1,
+        running_average_window_size: int = 1,
+        smooth_butterworth: bool = False,
     ):
-        self.seq_params = self._smooth_data(
-            sequence_parameters, window_size=window_size
+        self.seq_params = (
+            self._smooth_data_butterworth(sequence_parameters)
+            if smooth_butterworth
+            else self._smooth_data(
+                sequence_parameters, window_size=running_average_window_size
+            )
         )
         self.name_idx_mapping = self._reverse_idx_mapping(selected_joints)
         self.c_idx = coordinates_idx
@@ -132,6 +139,50 @@ class GaitParametersExtractorRaw2D:
         assert smoothed_data.keys() == sequence_parameters.keys()
 
         return smoothed_data
+
+    def _smooth_data_butterworth(self, ptcp_data: Mapping[str, Sequence]):
+        """Smooth sequence parameters data with butterworth filter."""
+        new_ptcp_data = deepcopy(ptcp_data)
+
+        for joint_idx in range(len(ptcp_data["0"])):
+            for coord_idx in range(2):
+                s_t = np.array(
+                    [frame[joint_idx][coord_idx] for frame in ptcp_data.values()]
+                )
+                filtered_signal = self._butterworth_filter(raw_data=s_t)
+
+                for f_idx, new_value in enumerate(filtered_signal):
+                    new_ptcp_data[str(f_idx)][joint_idx][coord_idx] = new_value
+
+        return new_ptcp_data
+
+    @staticmethod
+    def _butterworth_filter(
+        raw_data: np.ndarray,
+        cutoff_frequency: int = 5,
+        order: int = 2,
+        fs: int = 200,
+        scale: bool = False,
+    ) -> np.ndarray:
+        """
+        Butterworth filter applied to movement positions
+        """
+        # Butterworth low pass filter
+        b, a = butter(order, [cutoff_frequency / (fs / 2)], btype="low", analog=False)
+        # b -> Numerator polynomial coefficients of filter transfer function
+        # a -> Denominator polynomial coefficients of filter transfer function
+        # to get a zerophase distortion, this filter is applied. In this operation both
+        # forward and backward filter is applied
+        filtered_signal = filtfilt(b, a, raw_data)
+
+        if scale:
+            # As the low pass filter reduces the amplitude of the filtered signal;
+            # to ensure amplitude remains consistent it should be multiplied with a
+            # scale factor
+            scale_factor = 5 / max(abs(filtered_signal))
+            filtered_signal = filtered_signal * scale_factor
+
+        return filtered_signal
 
     def get_step_frames(self, window_size: int = 10) -> Tuple[Sequence, Sequence]:
         """

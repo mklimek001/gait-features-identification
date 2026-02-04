@@ -2,11 +2,9 @@ import math
 import numpy as np
 from copy import deepcopy
 from typing import Sequence, Mapping, Tuple
-from scipy.signal import butter, lfilter, filtfilt
+from scipy.signal import butter, filtfilt
 from utils.gait_parameters_extractor import (
     CoordinatesIdx,
-    StepsNotFoundException,
-    ParametersExtractionException,
 )
 
 
