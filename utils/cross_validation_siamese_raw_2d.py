@@ -25,6 +25,7 @@ from sklearn.metrics import (
     average_precision_score,
     top_k_accuracy_score,
 )
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
@@ -335,7 +336,7 @@ class CrossValidationSiameseRaw2D:
         random.shuffle(participants)
         test_folds = [[] for _ in range(folds)]
         for idx, item in enumerate(participants):
-            test_folds[idx % 5].append(item)
+            test_folds[idx % folds].append(item)
 
         train_folds = [
             [i for i in range(1, 33) if not i in test_fold] for test_fold in test_folds
@@ -468,6 +469,8 @@ class CrossValidationSiameseRaw2D:
             ),
             "NB": GaussianNB(),
             "LR": LogisticRegression(),
+            "RF": RandomForestClassifier(n_estimators=100, random_state=42),
+            "GradBoost": GradientBoostingClassifier(n_estimators=100, random_state=42),
         }
 
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
@@ -499,6 +502,10 @@ class CrossValidationSiameseRaw2D:
                 probs = clf.predict_proba(X_test)
 
                 max_k = len(clf.classes_)
+
+                self._logger.debug(f"{y_test = }")
+                self._logger.debug(f"{probs = }")
+
                 r1_scores.append(
                     top_k_accuracy_score(y_test, probs, k=1, labels=clf.classes_)
                 )
@@ -618,6 +625,8 @@ class CrossValidationSiameseRaw2D:
                 "MLP",
                 "NB",
                 "LR",
+                "RF",
+                "GradBoost",
             ]
         }
 

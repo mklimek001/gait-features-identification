@@ -1,4 +1,3 @@
-import json
 from utils.gait_parameters_extractor_v2 import GaitParametersExtractorV2
 from utils.gait_parameters_extractor import CoordinatesIdx
 
@@ -7,9 +6,14 @@ def separate_gait_sequences_to_cycles(
     data_3d,
     window_size: int = 32,
     minima_window_size: int = 10,
-    running_average_window_size: int = 1,
-    coordinates_index: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
+    coordinates_index: CoordinatesIdx = CoordinatesIdx(),
     scale_factor: int = 255,
+    smooth_butterworth: bool = False,
+    running_average_window_size: int = 1,
+    # butterworth filter parameters
+    cutoff_frequency: int = 5,
+    order: int = 2,
+    fs: int = 200,
     print_stats: bool = True,
 ):
     results = {}
@@ -19,11 +23,15 @@ def separate_gait_sequences_to_cycles(
 
     for seq_key in list(data_3d.keys()):
         gpe = GaitParametersExtractorV2(
-            data_3d[seq_key],
-            coordinates_index,
-            scale_factor,
-            minima_window_size,
-            running_average_window_size,
+            sequence_parameters=data_3d[seq_key],
+            coordintates_idx=coordinates_index,
+            scale_factor=scale_factor,
+            minima_window_size=minima_window_size,
+            running_average_window_size=running_average_window_size,
+            smooth_butterworth=smooth_butterworth,
+            cutoff_frequency=cutoff_frequency,
+            order=order,
+            fs=fs,
         )
         if len(gpe.l_steps) > 1 and len(gpe.r_steps) > 1:
             steps_sequence = []
@@ -51,6 +59,8 @@ def separate_gait_sequences_to_cycles(
         print("  Median: ", sorted(cum_step_frames)[len(cum_step_frames) // 2])
         print(" Over 32: ", sum(1 for step in cum_step_frames if step > 32))
         print("  Failed: ", fail_counter)
+
+    return results
 
 
 def _calc_step_frames(steps: list) -> list[int]:

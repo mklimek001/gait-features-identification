@@ -154,14 +154,16 @@ class ContrastiveLoss(nn.Module):
 
 def compute_similarity(x1, x2, model):
     model.eval()
+    device = next(model.parameters()).device
+
     with torch.no_grad():
         if isinstance(x1, np.ndarray):
             x1 = torch.from_numpy(x1)
         if isinstance(x2, np.ndarray):
             x2 = torch.from_numpy(x2)
 
-        x1 = x1.float().unsqueeze(0)
-        x2 = x2.float().unsqueeze(0)
+        x1 = x1.float().unsqueeze(0).to(device)
+        x2 = x2.float().unsqueeze(0).to(device)
 
         out1, out2 = model(x1, x2)
         distance = F.pairwise_distance(out1, out2)

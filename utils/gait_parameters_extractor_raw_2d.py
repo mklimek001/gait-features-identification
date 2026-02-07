@@ -52,11 +52,19 @@ class GaitParametersExtractorRaw2D:
             str, str
         ],  # mapping between indexes and selected joint names in frame array
         coordinates_idx: CoordinatesIdx2D = CoordinatesIdx2D(),
-        running_average_window_size: int = 1,
+        running_average_window_size: int = 1, # running average parameter
         smooth_butterworth: bool = False,
+        cutoff_frequency: int = 5, # butterworth filter parameter
+        order: int = 2, # butterworth filter parameter
+        fs: int = 200, # butterworth filter parameter
     ):
         self.seq_params = (
-            self._smooth_data_butterworth(sequence_parameters)
+            self._smooth_data_butterworth(
+                sequence_parameters,
+                cutoff_frequency=cutoff_frequency,
+                order=order,
+                fs=fs,
+            )
             if smooth_butterworth
             else self._smooth_data(
                 sequence_parameters, window_size=running_average_window_size
@@ -140,7 +148,13 @@ class GaitParametersExtractorRaw2D:
 
         return smoothed_data
 
-    def _smooth_data_butterworth(self, ptcp_data: Mapping[str, Sequence]):
+    def _smooth_data_butterworth(
+        self,
+        ptcp_data: Mapping[str, Sequence],
+        cutoff_frequency: int = 5,
+        order: int = 2,
+        fs: int = 200,
+    ):
         """Smooth sequence parameters data with butterworth filter."""
         new_ptcp_data = deepcopy(ptcp_data)
 
@@ -149,7 +163,9 @@ class GaitParametersExtractorRaw2D:
                 s_t = np.array(
                     [frame[joint_idx][coord_idx] for frame in ptcp_data.values()]
                 )
-                filtered_signal = self._butterworth_filter(raw_data=s_t)
+                filtered_signal = self._butterworth_filter(
+                    raw_data=s_t, cutoff_frequency=cutoff_frequency, order=order, fs=fs
+                )
 
                 for f_idx, new_value in enumerate(filtered_signal):
                     new_ptcp_data[str(f_idx)][joint_idx][coord_idx] = new_value

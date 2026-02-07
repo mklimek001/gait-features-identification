@@ -3,13 +3,14 @@ import logging
 import sys
 import random
 from typing import Mapping, Sequence, Tuple, Literal, Iterator
+from pathlib import Path
 
 import torch
 import numpy as np
 import seaborn as sns
 import pandas as pd
+from dataclasses import dataclass
 
-from pathlib import Path
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -25,6 +26,7 @@ from sklearn.metrics import (
     average_precision_score,
     top_k_accuracy_score,
 )
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.model_selection import StratifiedKFold
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
@@ -46,6 +48,24 @@ from utils.torch_siamese_raw import (
 )
 
 
+@dataclass
+class TrainingParameters:
+    """Training parameters"""
+
+    learning_rate: float = 1e-4
+    batch_size: int = 32
+    n_epochs: int = 20
+
+
+@dataclass
+class TrainingProcedureParameters:
+    """Training parameters for whole procedure"""
+
+    tp_conv1d: TrainingParameters
+    tp_lstm: TrainingParameters
+    n_folds: int = 4
+
+
 class CrossValidationSiameseRaw:
     def __init__(
         self,
@@ -65,6 +85,7 @@ class CrossValidationSiameseRaw:
         self.participants = participants
         self.cycles_features = cycles_features
         self.features_number = features_number
+        self.involve_hands_parameters = involve_hands_parameters
 
     def prepare_cycles_and_participant_labels(
         self,
@@ -191,6 +212,7 @@ class CrossValidationSiameseRaw:
         labels: Sequence[int],
         embeddings: Sequence[Sequence[float]],
         perplexity: int = 10,
+        plot_file_name: str = "tsne_plot.pdf",
     ):
         labels = np.array(labels)
         embeddings = np.array(embeddings)
@@ -214,6 +236,7 @@ class CrossValidationSiameseRaw:
         plt.xlabel("t-SNE 1")
         plt.ylabel("t-SNE 2")
         plt.tight_layout()
+        plt.savefig(f"./plots/tsne/{plot_file_name}", format="pdf")
         plt.show()
 
     def _single_train_iteration(
@@ -226,6 +249,9 @@ class CrossValidationSiameseRaw:
         embedding_size: int = 10,
     ) -> torch.nn.Module:
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self._logger.info("Using device: %s", device)
+
         if siamese_nn_type == "lstm":
             model = SiameseNetworkLSTM(
                 input_size=self.features_number, embedding_size=embedding_size
@@ -235,21 +261,27 @@ class CrossValidationSiameseRaw:
                 input_size=self.features_number, embedding_size=embedding_size
             )
 
+        model.to(device)
+
         criterion = ContrastiveLoss()
         optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         for epoch in range(n_epochs):
             train_dataset.regenerate_pairs()
             train_loader = DataLoader(
-                train_dataset, batch_size=batch_size, shuffle=True
+                train_dataset,
+                batch_size=batch_size,
+                shuffle=True,
+                pin_memory=True if device.type == "cuda" else False,  # Optimization
             )
 
             model.train()
             train_loss = 0
             for x1, x2, label in train_loader:
+                x1, x2, label = x1.to(device), x2.to(device), label.to(device)
+                optimizer.zero_grad()
                 out1, out2 = model(x1, x2)
                 loss = criterion(out1, out2, label)
-                optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
                 train_loss += loss.item()
@@ -263,20 +295,6 @@ class CrossValidationSiameseRaw:
         return model
 
     def _single_train_evaluation(
-        self,
-        model: torch.nn.Module,
-        test_dataset: SiameseGaitDatasetRaw,
-    ):
-        y_true_values = []
-        y_pred_values = []
-
-        for ptcpt_1, ptcpt_2, label in test_dataset.data:
-            y_true_values.append(label.item())
-            y_pred_values.append(compute_similarity(ptcpt_1, ptcpt_2, model).item())
-
-        return y_true_values, y_pred_values
-
-    def _single_train_evaluation_with_rank_classification(
         self,
         model: torch.nn.Module,
         test_dataset: SiameseGaitDatasetRaw,
@@ -448,7 +466,7 @@ class CrossValidationSiameseRaw:
 
     def perform_rank_classification_cv(
         self, X: Sequence[Sequence[float]], y: Sequence[int], n_splits: int = 5
-    ) -> Mapping[str, float]:
+    ) -> Mapping[str, list[float]]:
         X = np.array(X)
         y = np.array(y)
 
@@ -461,6 +479,8 @@ class CrossValidationSiameseRaw:
             ),
             "NB": GaussianNB(),
             "LR": LogisticRegression(),
+            "RF": RandomForestClassifier(n_estimators=100, random_state=42),
+            "GradBoost": GradientBoostingClassifier(n_estimators=100, random_state=42),
         }
 
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=42)
@@ -564,17 +584,23 @@ class CrossValidationSiameseRaw:
             test_labels = []
             test_participants_embeddings = []
 
+            device = next(trained_model.parameters()).device
+
             for test_participant in test_participants:
                 for idx, tmp_ptcp in enumerate(self.participants):
                     if tmp_ptcp == test_participant:
                         test_labels.append(test_participant)
                         ptcp_features = self.cycles_features[idx]
                         ptcp_features_tensor = (
-                            torch.from_numpy(ptcp_features.T).float().unsqueeze(0)
+                            torch.from_numpy(ptcp_features.T)
+                            .float()
+                            .unsqueeze(0)
+                            .to(device)
                         )
                         ptcp_features_embedding = (
                             trained_model.forward_once(ptcp_features_tensor)
                             .detach()
+                            .cpu()
                             .numpy()[0]
                         )
                         test_participants_embeddings.append(ptcp_features_embedding)
@@ -584,11 +610,19 @@ class CrossValidationSiameseRaw:
                     "Participant: %r Embedding: %r", test_label, list(embedding)
                 )
 
+            if self.involve_hands_parameters:
+                plot_file_name = (
+                    f"{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
+                )
+            else:
+                plot_file_name = f"no_hands_{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
+
             if show_plot:
                 self._prepare_tsne_plot(
                     labels=test_labels,
                     embeddings=test_participants_embeddings,
                     perplexity=tsne_perplexity,
+                    plot_file_name=plot_file_name,
                 )
 
             self._logger.info(
@@ -611,6 +645,8 @@ class CrossValidationSiameseRaw:
                 "MLP",
                 "NB",
                 "LR",
+                "RF",
+                "GradBoost",
             ]
         }
 
