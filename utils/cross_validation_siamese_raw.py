@@ -220,7 +220,7 @@ class CrossValidationSiameseRaw:
         tsne = TSNE(n_components=2, perplexity=perplexity, random_state=42)
         X_tsne = tsne.fit_transform(embeddings)
 
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(5, 4))
 
         for ptcp in set(labels):
             plt.scatter(
@@ -236,7 +236,7 @@ class CrossValidationSiameseRaw:
         plt.xlabel("t-SNE 1")
         plt.ylabel("t-SNE 2")
         plt.tight_layout()
-        plt.savefig(f"./plots/tsne/{plot_file_name}", format="pdf")
+        plt.savefig(f"./plots/tsne_bigger/{plot_file_name}", format="pdf")
         plt.show()
 
     def _single_train_iteration(
@@ -558,6 +558,8 @@ class CrossValidationSiameseRaw:
         for train_participants, test_participants in train_test_folds_iterator:
             self._logger.info("[Iteration %r/%r]", iteration, n_folds)
             iteration += 1
+            if iteration in [2, 4, 5]:
+                continue # TODO: remove this part after collecting new data
 
             self._logger.debug("Test fold participants: %r", sorted(test_participants))
             self._logger.debug(
