@@ -14,7 +14,11 @@ class MediaPipeEstimator:
 
         options = PoseLandmarkerOptions(
             base_options=BaseOptions(model_asset_path=model_path),
-            running_mode=VisionRunningMode.VIDEO)
+            running_mode=VisionRunningMode.VIDEO,
+            min_pose_detection_confidence=0.05,
+            min_pose_presence_confidence=0.05,
+            min_tracking_confidence=0.05,
+            )
 
         self.landmarker = mp.tasks.vision.PoseLandmarker.create_from_options(options)
 
