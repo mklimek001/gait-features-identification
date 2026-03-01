@@ -1,10 +1,62 @@
 import random
 import torch
+import re
+import json
+import math
 import numpy as np
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
-from typing import Sequence
+from typing import Sequence, Mapping, Literal
+
+
+DATASET_PARAMETER_FILES = {
+    "mocap": "datasets/mocap/calculated_parameters_v3.json",
+    "openpose": "datasets/openpose/calculated_parameters_openpose_triangulated_v2.json",
+    "mediapipe": "datasets/mediapipe/calculated_parameters_v4_triangulated.json",
+    "hrnet": "datasets/mmpose/calculated_parameters_hrnet_triangulated.json",
+    "rtmpose": "datasets/mmpose/calculated_parameters_rtmpose_triangulated.json",
+    "vitpose": "datasets/mmpose/calculated_parameters_vitpose_triangulated.json",
+    "movenet_lightning": "datasets/movenet/calculated_parameters_lightning_triangulated.json",
+    "movenet_thunder": "datasets/movenet/calculated_parameters_thunder_triangulated.json",
+    "yolo_v26": "datasets/yolo/calculated_parameters_v3_yolo26.json",
+    "yolo_v11": "datasets/yolo/calculated_parameters_v2_triangulated_v3.json",
+}
+
+
+SKELETON_FORMATS = {
+    "mocap": ["mocap"],
+    "body_25": ["openpose"],
+    "mediapipe": ["mediapipe"],
+    "coco": [
+        "hrnet",
+        "rtmpose",
+        "vitpose",
+        "yolo_v11",
+        "yolo_v26",
+        "movenet_lightning",
+        "movenet_thunder",
+    ],
+}
+
+PARAMETER_NAMES = [
+    "legs_angles",
+    "left_knee_angles",
+    "right_knee_angles",
+    "left_hip_angles",
+    "right_hip_angles",
+    "left_humerus_angles",
+    "right_humerus_angles",
+    "left_elbow_angles",
+    "right_elbow_angles",
+    "ankle_distances",
+    "knee_distances",
+    "elbow_distances",
+    "hand_distances",
+    "center_of_gravity_height_change",
+    "lateral_pelvic_tilt",
+    "pelvis_rotation",
+]
 
 
 class SiameseGaitDatasetRaw(Dataset):
@@ -81,6 +133,265 @@ class SiameseGaitDatasetRaw(Dataset):
 
     def __len__(self):
         return len(self.data)
+    
+
+class SiameseGaitDatasetRawMultipleDatasets(Dataset):
+    def __init__(
+        self,
+        selected_participants: Sequence[int],
+        selected_datasets: Sequence[str] | str | None,
+        diff_dataset_usage: Literal[
+            "MIX_ALL", "SKELETON_TYPE", "DATASET_TYPE"
+        ] = "MIX_ALL",
+        sequence_length: int = 32,
+        feature_dim: int = 16,
+    ):
+        self.selected_participants = selected_participants
+        if isinstance(selected_datasets, str):
+            self.selected_datasets = [selected_datasets]
+        elif isinstance(selected_datasets, Sequence):
+            self.selected_datasets = selected_datasets
+        else:
+            self.selected_datasets = list(DATASET_PARAMETER_FILES.keys())
+
+        self.diff_dataset_usage = diff_dataset_usage
+        self.features_by_dataset = self._prepare_features_list()
+        self.sequence_length = sequence_length
+        self.feature_dim = feature_dim
+        self.data = []
+
+        self.regenerate_pairs()
+
+    def _prepare_features_list(
+        self,
+    ) -> Mapping[str, Mapping[int, np.array]]:
+        param_ds = {}
+
+        for name, file_path in DATASET_PARAMETER_FILES.items():
+            with open(file_path, "r", encoding="utf-8") as file:
+                param_ds[name] = json.load(file)
+
+        return {
+            name: self._get_steps_features(features)
+            for name, features in param_ds.items()
+        }
+
+    def _find_local_maxima(
+        self, data: Sequence[float], window_size: int = 7
+    ) -> Sequence[int]:
+        local_maxima_indices = []
+
+        for i in range(window_size, len(data) - window_size):
+            window_prev = data[i - window_size : i]
+            window_next = data[i + 1 : i + window_size + 1]
+            current = data[i]
+
+            if current > max(window_prev) and current > max(window_next):
+                local_maxima_indices.append(i)
+
+        return local_maxima_indices
+
+    def _get_person_from_seq_key(self, sequence_key: str) -> int:
+        match = re.search(r"p(\d+)s", sequence_key)
+        if match:
+            person_id = int(match.group(1))
+            return person_id
+        else:
+            raise Exception(
+                f"Person identifier cannot be extracted from provided key ({sequence_key})"
+            )
+
+    def _get_steps_features(self, dataset):
+        extracted_paramters = {i: [] for i in range(1, 33)}
+        for sequence_key, sequence_parameters in dataset.items():
+            person_id = self._get_person_from_seq_key(sequence_key)
+            maxima = self._find_local_maxima(sequence_parameters["ankle_distances"])
+            if len(maxima) % 2:
+                stride_centers = [
+                    int(maxima[2 * i] + 0.5 * (maxima[2 * i + 2] - maxima[2 * i]))
+                    for i in range(len(maxima) // 2)
+                ]
+            else:
+                stride_centers = [
+                    int(maxima[2 * i] + 0.5 * (maxima[2 * i + 2] - maxima[2 * i]))
+                    for i in range(len(maxima) // 2 - 1)
+                ]
+            for c_idx in stride_centers:
+                stride_matrix = np.array(
+                    [
+                        sequence_parameters[parameter][c_idx - 16 : c_idx + 16]
+                        for parameter in PARAMETER_NAMES
+                    ]
+                )
+                extracted_paramters[person_id].append(stride_matrix)
+
+        return extracted_paramters
+
+    def _to_sequence(self, row):
+        """
+        Convert flat row -> (X, 32)
+        """
+        arr = row.values.astype("float32")
+        return torch.tensor(
+            arr.reshape(self.sequence_length, self.feature_dim),
+            dtype=torch.float32,
+        )
+
+    def regenerate_pairs(self):
+        self.data = []
+
+        if self.diff_dataset_usage == "DATASET_TYPE":
+            for dataset in self.selected_datasets:
+                for positive_participant in self.selected_participants:
+                    participant_matrices = self.features_by_dataset[dataset][
+                        positive_participant
+                    ]
+                    other_selected_participants_matrices = []
+
+                    for tmp_ptcp in self.selected_participants:
+                        if tmp_ptcp != positive_participant:
+                            other_selected_participants_matrices += (
+                                self.features_by_dataset[dataset][tmp_ptcp]
+                            )
+
+                    for i in range(len(participant_matrices)):
+                        for j in range(i + 1, len(participant_matrices)):
+
+                            # positive pair
+                            self.data.append(
+                                (
+                                    participant_matrices[i].astype(np.float32).T,
+                                    participant_matrices[j].astype(np.float32).T,
+                                    torch.tensor(0.0),
+                                )
+                            )
+
+                            rand_positive_ptcp_sample = random.choice(
+                                participant_matrices
+                            )
+                            rand_negative_ptcp_sample = random.choice(
+                                other_selected_participants_matrices
+                            )
+
+                            # negative pair
+                            self.data.append(
+                                (
+                                    rand_positive_ptcp_sample.astype(np.float32).T,
+                                    rand_negative_ptcp_sample.astype(np.float32).T,
+                                    torch.tensor(1.0),
+                                )
+                            )
+
+        if self.diff_dataset_usage == "MIX_ALL":
+            for positive_participant in self.selected_participants:
+                participant_matrices = []
+                other_selected_participants_matrices = []
+                for dataset in self.selected_datasets:
+                    for tmp_ptcp in self.selected_participants:
+                        if tmp_ptcp != positive_participant:
+                            other_selected_participants_matrices += (
+                                self.features_by_dataset[dataset][tmp_ptcp]
+                            )
+                        else:
+                            participant_matrices += self.features_by_dataset[dataset][
+                                tmp_ptcp
+                            ]
+
+                for i in range(len(participant_matrices)):
+                    for j in range(i + 1, len(participant_matrices)):
+
+                        # positive pair
+                        self.data.append(
+                            (
+                                participant_matrices[i].astype(np.float32).T,
+                                participant_matrices[j].astype(np.float32).T,
+                                torch.tensor(0.0),
+                            )
+                        )
+
+                        rand_positive_ptcp_sample = random.choice(participant_matrices)
+                        rand_negative_ptcp_sample = random.choice(
+                            other_selected_participants_matrices
+                        )
+
+                        # negative pair
+                        self.data.append(
+                            (
+                                rand_positive_ptcp_sample.astype(np.float32).T,
+                                rand_negative_ptcp_sample.astype(np.float32).T,
+                                torch.tensor(1.0),
+                            )
+                        )
+
+        if self.diff_dataset_usage == "SKELETON_TYPE":
+            for ds_with_common_skeleton in SKELETON_FORMATS.values():
+                selected_ds_with_common_skeleton = [
+                    ds for ds in ds_with_common_skeleton if ds in self.selected_datasets
+                ]
+                for positive_participant in self.selected_participants:
+                    participant_matrices = []
+                    other_selected_participants_matrices = []
+                    for dataset in selected_ds_with_common_skeleton:
+                        for tmp_ptcp in self.selected_participants:
+                            if tmp_ptcp != positive_participant:
+                                other_selected_participants_matrices += (
+                                    self.features_by_dataset[dataset][tmp_ptcp]
+                                )
+                            else:
+                                participant_matrices += self.features_by_dataset[
+                                    dataset
+                                ][tmp_ptcp]
+
+                    for i in range(len(participant_matrices)):
+                        for j in range(i + 1, len(participant_matrices)):
+
+                            # positive pair
+                            self.data.append(
+                                (
+                                    participant_matrices[i].astype(np.float32).T,
+                                    participant_matrices[j].astype(np.float32).T,
+                                    torch.tensor(0.0),
+                                )
+                            )
+
+                            rand_positive_ptcp_sample = random.choice(
+                                participant_matrices
+                            )
+                            rand_negative_ptcp_sample = random.choice(
+                                other_selected_participants_matrices
+                            )
+
+                            # negative pair
+                            self.data.append(
+                                (
+                                    rand_positive_ptcp_sample.astype(np.float32).T,
+                                    rand_negative_ptcp_sample.astype(np.float32).T,
+                                    torch.tensor(1.0),
+                                )
+                            )
+
+    def get_raw_sequences(self, participants_id: Sequence[int], dataset_type: str):
+        selected_ptcp_ids = []
+        selected_ptcp_params = []
+        
+        file_path = DATASET_PARAMETER_FILES[dataset_type]
+        with open(file_path, "r", encoding="utf-8") as file:
+            dataset_parameters = json.load(file)
+
+        dataset_features = self._get_steps_features(dataset_parameters)
+            
+        for participant in participants_id:
+            features_for_ptcp = dataset_features[participant]
+            selected_ptcp_params += features_for_ptcp
+            selected_ptcp_ids += [participant for _ in range(len(features_for_ptcp))]
+        
+        return selected_ptcp_ids, selected_ptcp_params
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def __len__(self):
+        return len(self.data)
 
 
 class SiameseNetworkLSTM(nn.Module):
@@ -112,7 +423,9 @@ class SiameseNetworkConv1D(nn.Module):
 
         self.encoder = nn.Sequential(
             # (batch, input_size, 32)
-            nn.Conv1d(in_channels=input_size, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv1d(
+                in_channels=input_size, out_channels=64, kernel_size=3, padding=1
+            ),
             nn.ReLU(),
             nn.Conv1d(64, 128, kernel_size=3, padding=1),
             nn.ReLU(),
@@ -127,6 +440,89 @@ class SiameseNetworkConv1D(nn.Module):
         # x: (batch, 32, input_size)
         x = x.transpose(1, 2)  # -> (batch, input_size, 32)
         x = self.encoder(x).squeeze(-1)
+        return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+
+
+class SiameseNetworkConv1DwithBactchNorm(nn.Module):
+    def __init__(self, input_size=16, embedding_size=128):
+        super().__init__()
+
+        self.encoder = nn.Sequential(
+            nn.Conv1d(in_channels=input_size, out_channels=64, kernel_size=3, padding=1),
+            nn.BatchNorm1d(64),
+            nn.ReLU(),
+            
+            nn.Conv1d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            
+            nn.Conv1d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm1d(256),
+            nn.ReLU(),
+            
+            nn.AdaptiveAvgPool1d(1),
+            nn.Flatten()
+        )
+
+        self.fc = nn.Sequential(
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(128, embedding_size)
+        )
+
+    def forward_once(self, x):
+        if x.dim() == 3 and x.shape[1] != self.encoder[0].in_channels:
+            x = x.transpose(1, 2)
+            
+        x = self.encoder(x)
+        x = self.fc(x)
+        return x
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+
+
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=32):
+        super().__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe.unsqueeze(0))
+
+    def forward(self, x):
+        # x: [batch, 32, 16]
+        return x + self.pe[:, :x.size(1)]
+
+class SiameseNetworkTransformer(nn.Module):
+    def __init__(self, input_size=16, embedding_size=10, nhead=4, num_layers=2):
+        super().__init__()
+        
+        self.pos_encoder = PositionalEncoding(input_size)
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=input_size, 
+            nhead=nhead, 
+            dim_feedforward=64, 
+            dropout=0.3,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        self.fc = nn.Linear(input_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.pos_encoder(x)
+        x = self.transformer(x) 
+        # Global Average Pooling to cmpress 32 steps into 1 vector
+        x = x.mean(dim=1) 
+        
         return self.fc(x)
 
     def forward(self, x1, x2):

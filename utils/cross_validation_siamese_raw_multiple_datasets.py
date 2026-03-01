@@ -1,4 +1,3 @@
-import re
 import logging
 import sys
 import random
@@ -9,7 +8,6 @@ import torch
 import numpy as np
 import seaborn as sns
 import pandas as pd
-from dataclasses import dataclass
 
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
@@ -35,98 +33,39 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neural_network import MLPClassifier
 
-from utils.gait_parameters_extractor_raw import (
-    GaitParametersExtractorRaw,
-    CoordinatesIdx,
-)
 from utils.torch_siamese_raw import (
     SiameseGaitDatasetRaw,
     SiameseGaitDatasetRawMultipleDatasets,
     SiameseNetworkLSTM,
     SiameseNetworkConv1D,
+    SiameseNetworkConv1DwithBactchNorm,
+    SiameseNetworkTransformer,
     ContrastiveLoss,
     compute_similarity,
 )
 
 
-@dataclass
-class TrainingParameters:
-    """Training parameters"""
-
-    learning_rate: float = 1e-4
-    batch_size: int = 32
-    n_epochs: int = 20
-
-
-@dataclass
-class TrainingProcedureParameters:
-    """Training parameters for whole procedure"""
-
-    tp_conv1d: TrainingParameters
-    tp_lstm: TrainingParameters
-    n_folds: int = 4
-
-
-class CrossValidationSiameseRaw:
+class CrossValidationSiameseMultipleDs:
     def __init__(
         self,
-        sequence_cycles: Mapping[str, np.ndarray],
-        coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
-        involve_hands_parameters: bool = True,
+        # sequence_cycles: Mapping[str, np.ndarray],
+        # coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
+        # involve_hands_parameters: bool = True,
         logger_name: str = "logger",
         log_level: int = logging.DEBUG,
     ):
-        self.raw_sequence_cycles = sequence_cycles
+        # self.raw_sequence_cycles = sequence_cycles
         self._logger = self._get_logger(log_level=log_level, name=logger_name)
-        participants, cycles_features, features_number = (
-            self.prepare_cycles_and_participant_labels(
-                sequence_cycles, coordinates_idx, involve_hands_parameters
-            )
-        )
-        self.participants = participants
-        self.cycles_features = cycles_features
-        self.features_number = features_number
-        self.involve_hands_parameters = involve_hands_parameters
-
-    def prepare_cycles_and_participant_labels(
-        self,
-        sequence_cycles: Mapping[str, np.ndarray],
-        coordinates_idx: CoordinatesIdx = CoordinatesIdx(2, 0, 1),
-        involve_hands_parameters: bool = True,
-    ) -> Tuple[Sequence[int], Sequence[np.ndarray], int]:
-
-        self._logger.info("Preparing cycles and participant labels...")
-
-        pattern = r"p(\d{1,2})s(\d{1,2})c(\d{1,2})"
-        combined_participants = []
-        combined_sequences_parameters = []
-
-        for sequence_key, sequence_joint_positions in sequence_cycles.items():
-            gpe_raw = GaitParametersExtractorRaw(
-                sequence_joint_positions, coordinates_idx=coordinates_idx
-            )
-            if involve_hands_parameters:
-                sequence_parameters = gpe_raw.get_gait_parameters()
-            else:
-                sequence_parameters = gpe_raw.get_gait_parameters_wo_hands()
-            match = re.search(pattern, sequence_key)
-            participant, _, _ = match.groups()
-
-            combined_participants.append(int(participant))
-            combined_sequences_parameters.append(sequence_parameters)
-
-        if involve_hands_parameters:
-            parameters_number = len(gpe_raw.get_gait_parameters_names())
-        else:
-            parameters_number = len(gpe_raw.get_gait_parameters_names_wo_hands())
-
-        return combined_participants, combined_sequences_parameters, parameters_number
-
-    def count_participants_samples(self):
-        for i in range(1, 33):
-            self._logger.debug(
-                "Participant %r -> %r samples", i, self.participants.count(i)
-            )
+        self.features_number = 16
+        # participants, cycles_features, features_number = (
+        #     self.prepare_cycles_and_participant_labels(
+        #         sequence_cycles, coordinates_idx, involve_hands_parameters
+        #     )
+        # )
+        # self.participants = participants
+        # self.cycles_features = cycles_features
+        # self.features_number = features_number
+        # self.involve_hands_parameters = involve_hands_parameters
 
     def _get_logger(self, log_level: int, name: str = "logger") -> logging.Logger:
         logger = logging.getLogger(name)
@@ -243,7 +182,8 @@ class CrossValidationSiameseRaw:
     def _single_train_iteration(
         self,
         train_dataset: SiameseGaitDatasetRaw,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
+        siamese_nn_type: Literal["conv1d", "conv1dbn", "lstm", "transformer"] = "conv1d",
+        optimizer_type: Literal["adam", "adamw", "rmsprop"] = "adam",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
@@ -257,6 +197,14 @@ class CrossValidationSiameseRaw:
             model = SiameseNetworkLSTM(
                 input_size=self.features_number, embedding_size=embedding_size
             )
+        elif siamese_nn_type == "transformer":
+            model = SiameseNetworkTransformer(
+               input_size=self.features_number, embedding_size=embedding_size  
+            )
+        elif siamese_nn_type == "conv1dbn":
+            SiameseNetworkConv1DwithBactchNorm(
+               input_size=self.features_number, embedding_size=embedding_size  
+            )
         else:
             model = SiameseNetworkConv1D(
                 input_size=self.features_number, embedding_size=embedding_size
@@ -265,7 +213,21 @@ class CrossValidationSiameseRaw:
         model.to(device)
 
         criterion = ContrastiveLoss()
-        optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+        if optimizer_type == "adamw":
+            optimizer = torch.optim.AdamW(
+                model.parameters(),
+                lr=learning_rate,
+                weight_decay=1e-4
+            )
+        elif optimizer_type == "rmsprop":
+            optimizer = torch.optim.RMSprop(
+                model.parameters(),
+                lr=learning_rate,
+                momentum=0.9
+            )
+        else:
+            optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
         for epoch in range(n_epochs):
             train_dataset.regenerate_pairs()
@@ -358,113 +320,6 @@ class CrossValidationSiameseRaw:
 
         return zip(train_folds, test_folds)
 
-    def perform_training(
-        self,
-        n_folds: int = 5,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
-        learning_rate: float = 1e-4,
-        batch_size: int = 32,
-        n_epochs: int = 10,
-        threshold: float = 0.5,
-        embedding_size: int = 10,
-        show_plot: bool = True,
-        csv_file_path: Path | str | None = None,
-    ):
-        cummulated_y_true_values = []
-        cummulated_y_pred_values = []
-
-        iteration = 1
-
-        train_test_folds_iterator = self._prepare_train_test_folds(n_folds)
-        for train_participants, test_participants in train_test_folds_iterator:
-            self._logger.info("[Iteration %r/%r]", iteration, n_folds)
-            iteration += 1
-
-            self._logger.debug("Test fold participants: %r", sorted(test_participants))
-            self._logger.debug(
-                "Train fold participants: %r", sorted(train_participants)
-            )
-
-            train_dataset = SiameseGaitDatasetRaw(
-                selected_participants=train_participants,
-                all_participants=self.participants,
-                features=self.cycles_features,
-                feature_dim=self.features_number,
-            )
-
-            test_dataset = SiameseGaitDatasetRaw(
-                selected_participants=test_participants,
-                all_participants=self.participants,
-                features=self.cycles_features,
-                feature_dim=self.features_number,
-            )
-
-            self._logger.info("Train dataset size: %r", len(train_dataset))
-            self._logger.info("Test dataset size: %r", len(test_dataset))
-
-            trained_model = self._single_train_iteration(
-                train_dataset=train_dataset,
-                siamese_nn_type=siamese_nn_type,
-                learning_rate=learning_rate,
-                batch_size=batch_size,
-                n_epochs=n_epochs,
-                embedding_size=embedding_size,
-            )
-
-            y_true_values, y_pred_values = self._single_train_evaluation(
-                model=trained_model,
-                test_dataset=test_dataset,
-            )
-
-            self._calculate_evaluation_metrics(
-                y_true_values=y_true_values,
-                y_pred_values=y_pred_values,
-                show_plot=show_plot,
-                threshold=threshold,
-            )
-
-            cummulated_y_true_values += y_true_values
-            cummulated_y_pred_values += y_pred_values
-
-        if csv_file_path is not None:
-            self._logger.info("Results will be saved to %r", csv_file_path)
-            pd.DataFrame(
-                {
-                    "true": cummulated_y_true_values,
-                    "predicted": cummulated_y_pred_values,
-                }
-            ).to_csv(csv_file_path)
-
-        self._logger.info("\n")
-        self._logger.info("Combined evaluation")
-        self._logger.info("%s", "*" * 50)
-
-        auroc = self._plot_pr_and_roc_curve(
-            y_pred_values=[min(value, 1) for value in cummulated_y_pred_values],
-            y_true_values=cummulated_y_true_values,
-            show_plot=show_plot,
-        )
-
-        self._logger.info("Area under ROC curve: %r", auroc)
-
-        accuracy, precision, recall = self._calculate_evaluation_metrics(
-            y_pred_values=cummulated_y_pred_values,
-            y_true_values=cummulated_y_true_values,
-            show_plot=show_plot,
-            threshold=threshold,
-        )
-
-        self._logger.info("& accuracy & precision &  recall  &   auroc  ")
-        self._logger.info(
-            "& %.2f    & %.2f     & %.2f     & %.2f",
-            accuracy * 100,
-            precision * 100,
-            recall * 100,
-            auroc * 100,
-        )
-
-        return accuracy, precision, recall, auroc
-
     def perform_rank_classification_cv(
         self, X: Sequence[Sequence[float]], y: Sequence[int], n_splits: int = 5
     ) -> Mapping[str, list[float]]:
@@ -536,163 +391,16 @@ class CrossValidationSiameseRaw:
 
         return results
 
-    def perform_training_with_rank_classification(
-        self,
-        n_folds: int = 5,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
-        learning_rate: float = 1e-4,
-        batch_size: int = 32,
-        n_epochs: int = 10,
-        embedding_size: int = 10,
-        tsne_perplexity: int = 10,
-        show_plot: bool = True,
-        csv_file_path: Path | str | None = None,
-    ):
-
-        iteration = 1
-
-        train_test_folds_iterator = self._prepare_train_test_folds(n_folds)
-
-        rank_classification_results = []
-        test_sets_sizes = []
-
-        for train_participants, test_participants in train_test_folds_iterator:
-            self._logger.info("[Iteration %r/%r]", iteration, n_folds)
-            iteration += 1
-            self._logger.debug("Test fold participants: %r", sorted(test_participants))
-            self._logger.debug(
-                "Train fold participants: %r", sorted(train_participants)
-            )
-
-            train_dataset = SiameseGaitDatasetRaw(
-                selected_participants=train_participants,
-                all_participants=self.participants,
-                features=self.cycles_features,
-            )
-
-            self._logger.info("Train dataset size: %r", len(train_dataset))
-
-            trained_model = self._single_train_iteration(
-                train_dataset=train_dataset,
-                siamese_nn_type=siamese_nn_type,
-                learning_rate=learning_rate,
-                batch_size=batch_size,
-                n_epochs=n_epochs,
-                embedding_size=embedding_size,
-            )
-
-            test_labels = []
-            test_participants_embeddings = []
-
-            device = next(trained_model.parameters()).device
-
-            for test_participant in test_participants:
-                for idx, tmp_ptcp in enumerate(self.participants):
-                    if tmp_ptcp == test_participant:
-                        test_labels.append(test_participant)
-                        ptcp_features = self.cycles_features[idx]
-                        ptcp_features_tensor = (
-                            torch.from_numpy(ptcp_features.T)
-                            .float()
-                            .unsqueeze(0)
-                            .to(device)
-                        )
-                        ptcp_features_embedding = (
-                            trained_model.forward_once(ptcp_features_tensor)
-                            .detach()
-                            .cpu()
-                            .numpy()[0]
-                        )
-                        test_participants_embeddings.append(ptcp_features_embedding)
-
-            for test_label, embedding in zip(test_labels, test_participants_embeddings):
-                self._logger.debug(
-                    "Participant: %r Embedding: %r", test_label, list(embedding)
-                )
-
-            if self.involve_hands_parameters:
-                plot_file_name = (
-                    f"{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
-                )
-            else:
-                plot_file_name = f"no_hands_{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
-
-            if show_plot:
-                self._prepare_tsne_plot(
-                    labels=test_labels,
-                    embeddings=test_participants_embeddings,
-                    perplexity=tsne_perplexity,
-                    plot_file_name=plot_file_name,
-                )
-
-            self._logger.info(
-                "Test set size for rank classification: %r", len(test_labels)
-            )
-
-            results = self.perform_rank_classification_cv(
-                X=test_participants_embeddings, y=test_labels
-            )
-
-            rank_classification_results.append(results)
-            test_sets_sizes.append(len(test_labels))
-
-        combined_results = {
-            clf_name: [0, 0, 0]
-            for clf_name in [
-                "k-NN eucl",
-                "k-NN manh",
-                "SVM",
-                "MLP",
-                "NB",
-                "LR",
-                "RF",
-                "GradBoost",
-            ]
-        }
-
-        for clsf_results, set_size in zip(rank_classification_results, test_sets_sizes):
-            for clf_name, accuracies in clsf_results.items():
-                for i, accuracy in enumerate(accuracies):
-                    combined_results[clf_name][i] += accuracy * set_size
-
-        self._logger.info("\n")
-        self._logger.info(
-            "Combined results from all folds (calculated with weighted average)"
-        )
-        self._logger.info("%s", "*" * 50)
-        self._logger.info(
-            "%-10s & %-10s & %-10s & %-10s",
-            "Model",
-            "Rank-1",
-            "Rank-2",
-            "Rank-3",
-        )
-        self._logger.info("%s", "-" * 50)
-
-        for clf_name, combined_accuracies in combined_results.items():
-            avg_weighted_accuracies = [
-                100 * acc / sum(test_sets_sizes) for acc in combined_accuracies
-            ]
-            # converted to % and format easier to use in overleaf
-            self._logger.info(
-                "%-10s & %.2f      & %.2f      & %.2f",
-                clf_name,
-                avg_weighted_accuracies[0],
-                avg_weighted_accuracies[1],
-                avg_weighted_accuracies[2],
-            )
-
-        self._logger.info("*" * 50)
-
     def perform_training_with_rank_classification_and_multiple_datasets(
         self,
+        n_folds: int = 4,
         selected_datasets: Sequence[str] | str | None = None,
-        validation_dataset: str = 'yolo_v26',
+        test_dataset_type: str = "yolo_v26",
         diff_dataset_usage: Literal[
             "MIX_ALL", "SKELETON_TYPE", "DATASET_TYPE"
         ] = "MIX_ALL",
-        n_folds: int = 5,
-        siamese_nn_type: Literal["conv1d", "lstm"] = "conv1d",
+        siamese_nn_type: Literal["conv1d", "conv1dbn", "lstm", "transformer"] = "conv1d",
+        optimizer_type: Literal["adam", "adamw", "rmsprop"] = "adam",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
@@ -702,6 +410,8 @@ class CrossValidationSiameseRaw:
         threshold: float = 0.5,
         csv_file_path: Path | str | None = None,
     ):
+        cummulated_y_true_values = []
+        cummulated_y_pred_values = []
 
         iteration = 1
 
@@ -725,8 +435,8 @@ class CrossValidationSiameseRaw:
             )
 
             test_dataset = SiameseGaitDatasetRawMultipleDatasets(
-                selected_participants=train_participants,
-                selected_datasets=validation_dataset,
+                selected_participants=test_participants,
+                selected_datasets=test_dataset_type,
                 diff_dataset_usage="DATASET_TYPE",
             )
 
@@ -736,6 +446,7 @@ class CrossValidationSiameseRaw:
             trained_model = self._single_train_iteration(
                 train_dataset=train_dataset,
                 siamese_nn_type=siamese_nn_type,
+                optimizer_type=optimizer_type,
                 learning_rate=learning_rate,
                 batch_size=batch_size,
                 n_epochs=n_epochs,
@@ -766,36 +477,29 @@ class CrossValidationSiameseRaw:
 
             device = next(trained_model.parameters()).device
 
-            for test_participant in test_participants:
-                for idx, tmp_ptcp in enumerate(self.participants):
-                    if tmp_ptcp == test_participant:
-                        test_labels.append(test_participant)
-                        ptcp_features = self.cycles_features[idx]
-                        ptcp_features_tensor = (
-                            torch.from_numpy(ptcp_features.T)
-                            .float()
-                            .unsqueeze(0)
-                            .to(device)
-                        )
-                        ptcp_features_embedding = (
-                            trained_model.forward_once(ptcp_features_tensor)
-                            .detach()
-                            .cpu()
-                            .numpy()[0]
-                        )
-                        test_participants_embeddings.append(ptcp_features_embedding)
+            selected_ptcp_ids, selected_ptcp_params = test_dataset.get_raw_sequences(
+                participants_id=test_participants, dataset_type=test_dataset_type
+            )
+
+            for ptcp_id, ptcp_features in zip(selected_ptcp_ids, selected_ptcp_params):
+                test_labels.append(ptcp_id)
+                ptcp_features_tensor = (
+                    torch.from_numpy(ptcp_features.T).float().unsqueeze(0).to(device)
+                )
+                ptcp_features_embedding = (
+                    trained_model.forward_once(ptcp_features_tensor)
+                    .detach()
+                    .cpu()
+                    .numpy()[0]
+                )
+                test_participants_embeddings.append(ptcp_features_embedding)
 
             for test_label, embedding in zip(test_labels, test_participants_embeddings):
                 self._logger.debug(
                     "Participant: %r Embedding: %r", test_label, list(embedding)
                 )
 
-            if self.involve_hands_parameters:
-                plot_file_name = (
-                    f"{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
-                )
-            else:
-                plot_file_name = f"no_hands_{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
+            plot_file_name = f"multiple_datasets_{self._logger.name}_{siamese_nn_type}_iter_{iteration-1}.pdf"
 
             if show_plot:
                 self._prepare_tsne_plot(
@@ -816,7 +520,6 @@ class CrossValidationSiameseRaw:
             rank_classification_results.append(results)
             test_sets_sizes.append(len(test_labels))
 
-        
         # summarize Siamese training
 
         if csv_file_path is not None:
