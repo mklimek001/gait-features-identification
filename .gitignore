@@ -129,6 +129,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+env_mediapipe
 
 # Spyder project settings
 .spyderproject
@@ -167,6 +168,7 @@ cython_debug/
 /gait3d.zip
 /sample_imgs
 /gait3d.zip
+/tpose
 
 # https://github.com/CalciferZh/AMCParser.git
 /AMCParser
@@ -190,6 +192,8 @@ cython_debug/
 
 # datasets with generated output
 /datasets
+/data
+/data.zip
 /models
 /plots
 
