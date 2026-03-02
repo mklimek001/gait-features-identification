@@ -1,5 +1,7 @@
 import math
+from copy import deepcopy
 from typing import Sequence, Mapping, Tuple, NamedTuple
+from scipy.signal import butter, filtfilt
 
 import numpy as np
 
@@ -42,9 +44,22 @@ class GaitParametersExtractorRaw:
         coordinates_idx: CoordinatesIdx = CoordinatesIdx(),
         scale_factor: int = 255,
         running_average_window_size: int = 1,
+        smooth_butterworth: bool = False,
+        cutoff_frequency: int = 5, # butterworth filter parameter
+        order: int = 2, # butterworth filter parameter
+        fs: int = 200, # butterworth filter parameter
     ):
-        self.seq_params = self._smooth_data(
-            sequence_parameters, window_size=running_average_window_size
+        self.seq_params = (
+            self._smooth_data_butterworth(
+                sequence_parameters,
+                cutoff_frequency=cutoff_frequency,
+                order=order,
+                fs=fs,
+            )
+            if smooth_butterworth
+            else self._smooth_data(
+                sequence_parameters, window_size=running_average_window_size
+            )
         )
         self.scale_factor = scale_factor
         self.c_idx = coordinates_idx
@@ -90,6 +105,57 @@ class GaitParametersExtractorRaw:
         assert len(sequence_parameters) == len(smoothed_data)
 
         return smoothed_data
+
+    def _smooth_data_butterworth(
+        self,
+        ptcp_data: Sequence[Mapping],
+        cutoff_frequency: int = 5,
+        order: int = 2,
+        fs: int = 200,
+    ):
+        """Smooth sequence parameters data with butterworth filter."""
+        new_ptcp_data = deepcopy(ptcp_data)
+
+        for joint in ptcp_data[0].keys():
+            for i in range(3):
+                s_t = np.array([frame[joint][i] for frame in ptcp_data])
+                filtered_signal = self._butterworth_filter(
+                    raw_data=s_t, cutoff_frequency=cutoff_frequency, order=order, fs=fs
+                )
+
+                for f_idx, new_value in enumerate(filtered_signal):
+                    new_ptcp_data[f_idx][joint][i] = new_value
+
+        return new_ptcp_data
+
+    @staticmethod
+    def _butterworth_filter(
+        raw_data: np.ndarray,
+        cutoff_frequency: int = 5,
+        order: int = 2,
+        fs: int = 200,
+        scale: bool = False,
+    ) -> np.ndarray:
+        """
+        Butterworth filter applied to movement positions
+        """
+        # Butterworth low pass filter
+        b, a = butter(order, [cutoff_frequency / (fs / 2)], btype="low", analog=False)
+        # b -> Numerator polynomial coefficients of filter transfer function
+        # a -> Denominator polynomial coefficients of filter transfer function
+        # to get a zerophase distortion, this filter is applied. In this operation both
+        # forward and backward filter is applied
+        filtered_signal = filtfilt(b, a, raw_data)
+
+        if scale:
+            # As the low pass filter reduces the amplitude of the filtered signal;
+            # to ensure amplitude remains consistent it should be multiplied with a
+            # scale factor
+            scale_factor = 5 / max(abs(filtered_signal))
+            filtered_signal = filtered_signal * scale_factor
+
+        return filtered_signal
+
 
     def get_gait_parameters(self) -> np.array:
         """

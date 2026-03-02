@@ -8,6 +8,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
 from typing import Sequence, Mapping, Literal
+import pandas as pd
+from sklearn.preprocessing import StandardScaler
+from sklearn.base import TransformerMixin
 
 
 DATASET_PARAMETER_FILES = {
@@ -21,6 +24,19 @@ DATASET_PARAMETER_FILES = {
     "movenet_thunder": "datasets/movenet/calculated_parameters_thunder_triangulated.json",
     "yolo_v26": "datasets/yolo/calculated_parameters_v3_yolo26.json",
     "yolo_v11": "datasets/yolo/calculated_parameters_v2_triangulated_v3.json",
+}
+
+DATASET_PARAMETER_FILES_BUTTERWORTH = datasets_parameters = {
+    "mocap": "datasets/mocap/calculated_parameters_butterworth_v3.json",
+    "openpose": "datasets/openpose/calculated_parameters_butterworth_openpose_triangulated_v2.json",
+    "mediapipe": "datasets/mediapipe/calculated_parameters_butterworth_v4_triangulated.json",
+    "hrnet": "datasets/mmpose/calculated_parameters_butterworth_hrnet_triangulated.json",
+    "rtmpose": "datasets/mmpose/calculated_parameters_butterworth_rtmpose_triangulated.json",
+    "vitpose": "datasets/mmpose/calculated_parameters_butterworth_vitpose_triangulated.json",
+    "movenet_lightning": "datasets/movenet/calculated_parameters_butterworth_lightning_triangulated.json",
+    "movenet_thunder": "datasets/movenet/calculated_parameters_butterworth_thunder_triangulated.json",
+    "yolo_v26": "datasets/yolo/calculated_parameters_butterworth_v3_yolo26.json",
+    "yolo_v11": "datasets/yolo/calculated_parameters_butterworth_v2_triangulated_v3.json",
 }
 
 
@@ -133,18 +149,77 @@ class SiameseGaitDatasetRaw(Dataset):
 
     def __len__(self):
         return len(self.data)
-    
+
+
+def get_person_from_seq_key(sequence_key: str) -> int:
+    match = re.search(r"p(\d+)s", sequence_key)
+    if match:
+        person_id = int(match.group(1))
+        return person_id
+    else:
+        raise Exception(
+            f"Person identifier cannot be extracted from provided key ({sequence_key})"
+        )
+
+
+def get_scaler(
+    selected_datasets: Sequence[str] | str | None,
+    training_set: Sequence[int],
+    use_butterworth: bool = False,
+) -> TransformerMixin:
+    """
+    Function prepare standard scaler on training set,
+    It can be later passed to SiameseGaitDatasetRawMultipleDatasets
+    """
+
+    if isinstance(selected_datasets, str):
+        selected_datasets = [selected_datasets]
+    if selected_datasets == None:
+        selected_datasets = list(DATASET_PARAMETER_FILES.keys())
+
+    param_ds = {}
+
+    if use_butterworth:
+        for name, file_path in DATASET_PARAMETER_FILES_BUTTERWORTH.items():
+            with open(file_path, "r", encoding="utf-8") as file:
+                param_ds[name] = json.load(file)
+    else:
+        for name, file_path in DATASET_PARAMETER_FILES.items():
+            with open(file_path, "r", encoding="utf-8") as file:
+                param_ds[name] = json.load(file)
+
+    combined_test_features = {parameter_name: [] for parameter_name in PARAMETER_NAMES}
+
+    for dataset_type, sequence_parameters in param_ds.items():
+        if dataset_type in selected_datasets:
+            for sequence_key, parameters in sequence_parameters.items():
+                person_id = get_person_from_seq_key(sequence_key)
+                if person_id in training_set:
+                    for parameter_name in PARAMETER_NAMES:
+                        combined_test_features[parameter_name] += parameters[
+                            parameter_name
+                        ]
+
+    features_df = pd.DataFrame(combined_test_features)
+
+    scaler = StandardScaler()
+    scaler.fit(features_df.values)
+
+    return scaler
+
 
 class SiameseGaitDatasetRawMultipleDatasets(Dataset):
     def __init__(
         self,
         selected_participants: Sequence[int],
         selected_datasets: Sequence[str] | str | None,
+        scaler: TransformerMixin | None = None,
         diff_dataset_usage: Literal[
             "MIX_ALL", "SKELETON_TYPE", "DATASET_TYPE"
         ] = "MIX_ALL",
         sequence_length: int = 32,
         feature_dim: int = 16,
+        use_butterworth_smoothed: bool = False,
     ):
         self.selected_participants = selected_participants
         if isinstance(selected_datasets, str):
@@ -154,6 +229,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
         else:
             self.selected_datasets = list(DATASET_PARAMETER_FILES.keys())
 
+        self.scaler = scaler
+        self.use_butterworth_smoothed = use_butterworth_smoothed
         self.diff_dataset_usage = diff_dataset_usage
         self.features_by_dataset = self._prepare_features_list()
         self.sequence_length = sequence_length
@@ -167,9 +244,15 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
     ) -> Mapping[str, Mapping[int, np.array]]:
         param_ds = {}
 
-        for name, file_path in DATASET_PARAMETER_FILES.items():
-            with open(file_path, "r", encoding="utf-8") as file:
-                param_ds[name] = json.load(file)
+        if self.use_butterworth_smoothed:
+            for name, file_path in DATASET_PARAMETER_FILES_BUTTERWORTH.items():
+                with open(file_path, "r", encoding="utf-8") as file:
+                    param_ds[name] = json.load(file)
+
+        else:
+            for name, file_path in DATASET_PARAMETER_FILES.items():
+                with open(file_path, "r", encoding="utf-8") as file:
+                    param_ds[name] = json.load(file)
 
         return {
             name: self._get_steps_features(features)
@@ -223,7 +306,17 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                         for parameter in PARAMETER_NAMES
                     ]
                 )
-                extracted_paramters[person_id].append(stride_matrix)
+
+                if self.scaler:
+                    extracted_paramters[person_id].append(
+                        np.array(self.scaler.transform(stride_matrix.T)).astype(
+                            np.float32
+                        )
+                    )
+                else:
+                    extracted_paramters[person_id].append(
+                        stride_matrix.astype(np.float32).T
+                    )
 
         return extracted_paramters
 
@@ -260,8 +353,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                             # positive pair
                             self.data.append(
                                 (
-                                    participant_matrices[i].astype(np.float32).T,
-                                    participant_matrices[j].astype(np.float32).T,
+                                    participant_matrices[i],
+                                    participant_matrices[j],
                                     torch.tensor(0.0),
                                 )
                             )
@@ -276,8 +369,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                             # negative pair
                             self.data.append(
                                 (
-                                    rand_positive_ptcp_sample.astype(np.float32).T,
-                                    rand_negative_ptcp_sample.astype(np.float32).T,
+                                    rand_positive_ptcp_sample,
+                                    rand_negative_ptcp_sample,
                                     torch.tensor(1.0),
                                 )
                             )
@@ -303,8 +396,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                         # positive pair
                         self.data.append(
                             (
-                                participant_matrices[i].astype(np.float32).T,
-                                participant_matrices[j].astype(np.float32).T,
+                                participant_matrices[i],
+                                participant_matrices[j],
                                 torch.tensor(0.0),
                             )
                         )
@@ -317,8 +410,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                         # negative pair
                         self.data.append(
                             (
-                                rand_positive_ptcp_sample.astype(np.float32).T,
-                                rand_negative_ptcp_sample.astype(np.float32).T,
+                                rand_positive_ptcp_sample,
+                                rand_negative_ptcp_sample,
                                 torch.tensor(1.0),
                             )
                         )
@@ -348,8 +441,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                             # positive pair
                             self.data.append(
                                 (
-                                    participant_matrices[i].astype(np.float32).T,
-                                    participant_matrices[j].astype(np.float32).T,
+                                    participant_matrices[i],
+                                    participant_matrices[j],
                                     torch.tensor(0.0),
                                 )
                             )
@@ -364,8 +457,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                             # negative pair
                             self.data.append(
                                 (
-                                    rand_positive_ptcp_sample.astype(np.float32).T,
-                                    rand_negative_ptcp_sample.astype(np.float32).T,
+                                    rand_positive_ptcp_sample.T,
+                                    rand_negative_ptcp_sample.T,
                                     torch.tensor(1.0),
                                 )
                             )
@@ -373,18 +466,21 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
     def get_raw_sequences(self, participants_id: Sequence[int], dataset_type: str):
         selected_ptcp_ids = []
         selected_ptcp_params = []
-        
-        file_path = DATASET_PARAMETER_FILES[dataset_type]
+
+        if self.use_butterworth_smoothed:
+            file_path = DATASET_PARAMETER_FILES_BUTTERWORTH[dataset_type]
+        else:
+            file_path = DATASET_PARAMETER_FILES[dataset_type]
         with open(file_path, "r", encoding="utf-8") as file:
             dataset_parameters = json.load(file)
 
         dataset_features = self._get_steps_features(dataset_parameters)
-            
+
         for participant in participants_id:
             features_for_ptcp = dataset_features[participant]
             selected_ptcp_params += features_for_ptcp
             selected_ptcp_ids += [participant for _ in range(len(features_for_ptcp))]
-        
+
         return selected_ptcp_ids, selected_ptcp_params
 
     def __getitem__(self, idx):
@@ -451,33 +547,32 @@ class SiameseNetworkConv1DwithBactchNorm(nn.Module):
         super().__init__()
 
         self.encoder = nn.Sequential(
-            nn.Conv1d(in_channels=input_size, out_channels=64, kernel_size=3, padding=1),
+            nn.Conv1d(
+                in_channels=input_size, out_channels=64, kernel_size=3, padding=1
+            ),
             nn.BatchNorm1d(64),
             nn.ReLU(),
-            
             nn.Conv1d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm1d(128),
             nn.ReLU(),
-            
             nn.Conv1d(128, 256, kernel_size=3, padding=1),
             nn.BatchNorm1d(256),
             nn.ReLU(),
-            
             nn.AdaptiveAvgPool1d(1),
-            nn.Flatten()
+            nn.Flatten(),
         )
 
         self.fc = nn.Sequential(
             nn.Linear(256, 128),
             nn.ReLU(),
             nn.Dropout(0.3),
-            nn.Linear(128, embedding_size)
+            nn.Linear(128, embedding_size),
         )
 
     def forward_once(self, x):
         if x.dim() == 3 and x.shape[1] != self.encoder[0].in_channels:
             x = x.transpose(1, 2)
-            
+
         x = self.encoder(x)
         x = self.fc(x)
         return x
@@ -491,38 +586,41 @@ class PositionalEncoding(nn.Module):
         super().__init__()
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+        )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        self.register_buffer('pe', pe.unsqueeze(0))
+        self.register_buffer("pe", pe.unsqueeze(0))
 
     def forward(self, x):
         # x: [batch, 32, 16]
-        return x + self.pe[:, :x.size(1)]
+        return x + self.pe[:, : x.size(1)]
+
 
 class SiameseNetworkTransformer(nn.Module):
     def __init__(self, input_size=16, embedding_size=10, nhead=4, num_layers=2):
         super().__init__()
-        
+
         self.pos_encoder = PositionalEncoding(input_size)
-        
+
         encoder_layer = nn.TransformerEncoderLayer(
-            d_model=input_size, 
-            nhead=nhead, 
-            dim_feedforward=64, 
+            d_model=input_size,
+            nhead=nhead,
+            dim_feedforward=64,
             dropout=0.3,
-            batch_first=True
+            batch_first=True,
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
+
         self.fc = nn.Linear(input_size, embedding_size)
 
     def forward_once(self, x):
         x = self.pos_encoder(x)
-        x = self.transformer(x) 
+        x = self.transformer(x)
         # Global Average Pooling to cmpress 32 steps into 1 vector
-        x = x.mean(dim=1) 
-        
+        x = x.mean(dim=1)
+
         return self.fc(x)
 
     def forward(self, x1, x2):

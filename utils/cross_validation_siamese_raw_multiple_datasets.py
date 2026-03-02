@@ -42,6 +42,7 @@ from utils.torch_siamese_raw import (
     SiameseNetworkTransformer,
     ContrastiveLoss,
     compute_similarity,
+    get_scaler,
 )
 
 
@@ -202,7 +203,7 @@ class CrossValidationSiameseMultipleDs:
                input_size=self.features_number, embedding_size=embedding_size  
             )
         elif siamese_nn_type == "conv1dbn":
-            SiameseNetworkConv1DwithBactchNorm(
+            model = SiameseNetworkConv1DwithBactchNorm(
                input_size=self.features_number, embedding_size=embedding_size  
             )
         else:
@@ -409,6 +410,8 @@ class CrossValidationSiameseMultipleDs:
         show_plot: bool = True,
         threshold: float = 0.5,
         csv_file_path: Path | str | None = None,
+        use_butterworth_smoothed: bool = False,
+        use_standard_scaler: bool = False, 
     ):
         cummulated_y_true_values = []
         cummulated_y_pred_values = []
@@ -428,16 +431,26 @@ class CrossValidationSiameseMultipleDs:
                 "Train fold participants: %r", sorted(train_participants)
             )
 
+            scaler = get_scaler(
+                selected_datasets=selected_datasets,
+                training_set=train_participants,
+                use_butterworth=use_butterworth_smoothed,
+            ) if use_standard_scaler else None
+
             train_dataset = SiameseGaitDatasetRawMultipleDatasets(
                 selected_participants=train_participants,
                 selected_datasets=selected_datasets,
                 diff_dataset_usage=diff_dataset_usage,
+                use_butterworth_smoothed=use_butterworth_smoothed,
+                scaler=scaler,
             )
 
             test_dataset = SiameseGaitDatasetRawMultipleDatasets(
                 selected_participants=test_participants,
                 selected_datasets=test_dataset_type,
                 diff_dataset_usage="DATASET_TYPE",
+                use_butterworth_smoothed=use_butterworth_smoothed,
+                scaler=scaler,
             )
 
             self._logger.info("Train dataset size: %r", len(train_dataset))
@@ -484,7 +497,7 @@ class CrossValidationSiameseMultipleDs:
             for ptcp_id, ptcp_features in zip(selected_ptcp_ids, selected_ptcp_params):
                 test_labels.append(ptcp_id)
                 ptcp_features_tensor = (
-                    torch.from_numpy(ptcp_features.T).float().unsqueeze(0).to(device)
+                    torch.from_numpy(ptcp_features).float().unsqueeze(0).to(device)
                 )
                 ptcp_features_embedding = (
                     trained_model.forward_once(ptcp_features_tensor)
