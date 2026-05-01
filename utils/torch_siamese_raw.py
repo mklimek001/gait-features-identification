@@ -208,6 +208,144 @@ def get_scaler(
     return scaler
 
 
+def get_identifiers_from_seq_key(sequence_key: str) -> tuple[int, int]:
+    match = re.search(r"p(\d+)s(\d+)", sequence_key)
+
+    if match:
+        person_id = int(match.group(1))
+        sequence_id = int(match.group(2))
+        return person_id, sequence_id
+    else:
+        raise Exception(
+            f"Identifiers cannot be extracted from provided key ({sequence_key})"
+        )
+
+
+def get_scaler_by_sequence(
+    data_file: str,
+    selected_sequences: Sequence[int],
+) -> TransformerMixin:
+    """
+    Function prepare standard scaler on training set,
+    It can be later passed to SiameseGaitDatasetRawMultipleDatasets
+    """
+    with open(data_file, "r", encoding="utf-8") as file:
+        features_ds = json.load(file)
+
+    combined_test_features = {parameter_name: [] for parameter_name in PARAMETER_NAMES}
+
+    for sequence_key, parameters in features_ds.items():
+        person_id, sequence_id = get_identifiers_from_seq_key(sequence_key)
+        if sequence_id in selected_sequences:
+            for parameter_name in PARAMETER_NAMES:
+                combined_test_features[parameter_name] += parameters[parameter_name]
+
+    features_df = pd.DataFrame(combined_test_features)
+
+    scaler = StandardScaler()
+    scaler.fit(features_df.values)
+
+    return scaler
+
+
+class SiameseGaitDatasetSingle(Dataset):
+    def __init__(
+        self,
+        selected_sequences: Sequence[int],
+        data_file: str,
+        scaler: TransformerMixin | None = None,
+        sequence_length: int = 32,
+        feature_dim: int = 16,
+    ):
+
+        self.scaler = scaler
+        self.selected_sequences = selected_sequences
+        self.features = self._prepare_features(data_file)
+        self.sequence_length = sequence_length
+        self.feature_dim = feature_dim
+        self.data = self._get_steps_features(self.features)
+
+    def _prepare_features(
+        self,
+        data_file: str,
+    ) -> Mapping[str, Mapping[int, np.array]]:
+
+        with open(data_file, "r", encoding="utf-8") as file:
+            features_ds = json.load(file)
+
+        return features_ds
+
+    def _find_local_maxima(
+        self, data: Sequence[float], window_size: int = 7
+    ) -> Sequence[int]:
+        local_maxima_indices = []
+
+        for i in range(window_size, len(data) - window_size):
+            window_prev = data[i - window_size : i]
+            window_next = data[i + 1 : i + window_size + 1]
+            current = data[i]
+
+            if current > max(window_prev) and current > max(window_next):
+                local_maxima_indices.append(i)
+
+        return local_maxima_indices
+
+    def _get_steps_features(self, dataset):
+        data = []
+        for sequence_key, sequence_parameters in dataset.items():
+            person_id, sequence_id = get_identifiers_from_seq_key(sequence_key)
+            if sequence_id in self.selected_sequences:
+                maxima = self._find_local_maxima(sequence_parameters["ankle_distances"])
+                if len(maxima) % 2:
+                    stride_centers = [
+                        int(maxima[2 * i] + 0.5 * (maxima[2 * i + 2] - maxima[2 * i]))
+                        for i in range(len(maxima) // 2)
+                    ]
+                else:
+                    stride_centers = [
+                        int(maxima[2 * i] + 0.5 * (maxima[2 * i + 2] - maxima[2 * i]))
+                        for i in range(len(maxima) // 2 - 1)
+                    ]
+                for c_idx in stride_centers:
+                    stride_matrix = np.array(
+                        [
+                            sequence_parameters[parameter][c_idx - 16 : c_idx + 16]
+                            for parameter in PARAMETER_NAMES
+                        ]
+                    )
+
+                    if self.scaler:
+                        data.append(
+                            np.array(self.scaler.transform(stride_matrix.T)).astype(
+                                np.float32
+                            ),
+                            torch.tensor(int(person_id) - 1),
+                        )
+                    else:
+                        data.append(
+                            stride_matrix.astype(np.float32).T,
+                            torch.tensor(int(person_id) - 1),
+                        )
+
+        return data
+
+    def _to_sequence(self, row):
+        """
+        Convert flat row -> (X, 32)
+        """
+        arr = row.values.astype("float32")
+        return torch.tensor(
+            arr.reshape(self.sequence_length, self.feature_dim),
+            dtype=torch.float32,
+        )
+
+    def __getitem__(self, idx):
+        return self.data[idx]
+
+    def __len__(self):
+        return len(self.data)
+
+
 class SiameseGaitDatasetRawMultipleDatasets(Dataset):
     def __init__(
         self,

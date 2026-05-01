@@ -1,6 +1,7 @@
 import logging
 import sys
 import random
+import json
 from typing import Mapping, Sequence, Tuple, Literal, Iterator
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import numpy as np
 import seaborn as sns
 import pandas as pd
 
+from collections import deque
 from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
@@ -183,7 +185,9 @@ class CrossValidationSiameseMultipleDs:
     def _single_train_iteration(
         self,
         train_dataset: SiameseGaitDatasetRaw,
-        siamese_nn_type: Literal["conv1d", "conv1dbn", "lstm", "transformer"] = "conv1d",
+        siamese_nn_type: Literal[
+            "conv1d", "conv1dbn", "lstm", "transformer"
+        ] = "conv1d",
         optimizer_type: Literal["adam", "adamw", "rmsprop"] = "adam",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
@@ -200,11 +204,11 @@ class CrossValidationSiameseMultipleDs:
             )
         elif siamese_nn_type == "transformer":
             model = SiameseNetworkTransformer(
-               input_size=self.features_number, embedding_size=embedding_size  
+                input_size=self.features_number, embedding_size=embedding_size
             )
         elif siamese_nn_type == "conv1dbn":
             model = SiameseNetworkConv1DwithBactchNorm(
-               input_size=self.features_number, embedding_size=embedding_size  
+                input_size=self.features_number, embedding_size=embedding_size
             )
         else:
             model = SiameseNetworkConv1D(
@@ -217,18 +221,17 @@ class CrossValidationSiameseMultipleDs:
 
         if optimizer_type == "adamw":
             optimizer = torch.optim.AdamW(
-                model.parameters(),
-                lr=learning_rate,
-                weight_decay=1e-4
+                model.parameters(), lr=learning_rate, weight_decay=1e-4
             )
         elif optimizer_type == "rmsprop":
             optimizer = torch.optim.RMSprop(
-                model.parameters(),
-                lr=learning_rate,
-                momentum=0.9
+                model.parameters(), lr=learning_rate, momentum=0.9
             )
         else:
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+
+        last_epochs = deque([], maxlen=5)
+        stopped_at = n_epochs
 
         for epoch in range(n_epochs):
             train_dataset.regenerate_pairs()
@@ -250,13 +253,20 @@ class CrossValidationSiameseMultipleDs:
                 optimizer.step()
                 train_loss += loss.item()
 
-            self._logger.info(
-                "Epoch %r, Train Loss: %r", epoch + 1, train_loss / len(train_loader)
-            )
+            epoch_loss = train_loss / len(train_loader)
+
+            self._logger.info("Epoch %r, Train Loss: %r", epoch + 1, epoch_loss)
+
+            if len(last_epochs) == 5 and epoch_loss > min(last_epochs):
+                stopped_at = epoch + 1
+                self._logger.info("Training stopped at %s", stopped_at)
+                break
+
+            last_epochs.append(epoch_loss)
 
         model.eval()
 
-        return model
+        return model, stopped_at
 
     def _single_train_evaluation(
         self,
@@ -400,7 +410,9 @@ class CrossValidationSiameseMultipleDs:
         diff_dataset_usage: Literal[
             "MIX_ALL", "SKELETON_TYPE", "DATASET_TYPE"
         ] = "MIX_ALL",
-        siamese_nn_type: Literal["conv1d", "conv1dbn", "lstm", "transformer"] = "conv1d",
+        siamese_nn_type: Literal[
+            "conv1d", "conv1dbn", "lstm", "transformer"
+        ] = "conv1d",
         optimizer_type: Literal["adam", "adamw", "rmsprop"] = "adam",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
@@ -411,7 +423,7 @@ class CrossValidationSiameseMultipleDs:
         threshold: float = 0.5,
         csv_file_path: Path | str | None = None,
         use_butterworth_smoothed: bool = False,
-        use_standard_scaler: bool = False, 
+        use_standard_scaler: bool = False,
     ):
         cummulated_y_true_values = []
         cummulated_y_pred_values = []
@@ -423,6 +435,18 @@ class CrossValidationSiameseMultipleDs:
         rank_classification_results = []
         test_sets_sizes = []
 
+        training_summarize = {
+            "parameters": {
+                "selected_train_datasets": selected_datasets,
+                "diff_dataset_usage": diff_dataset_usage,
+                "siamese_nn_type": siamese_nn_type,
+                "learning_rate": learning_rate,
+                "embedding_size": embedding_size,
+                "use_butterworth_smoothed": use_butterworth_smoothed,
+            },
+            "folds": [],
+        }
+
         for train_participants, test_participants in train_test_folds_iterator:
             self._logger.info("[Iteration %r/%r]", iteration, n_folds)
             iteration += 1
@@ -431,11 +455,15 @@ class CrossValidationSiameseMultipleDs:
                 "Train fold participants: %r", sorted(train_participants)
             )
 
-            scaler = get_scaler(
-                selected_datasets=selected_datasets,
-                training_set=train_participants,
-                use_butterworth=use_butterworth_smoothed,
-            ) if use_standard_scaler else None
+            scaler = (
+                get_scaler(
+                    selected_datasets=selected_datasets,
+                    training_set=train_participants,
+                    use_butterworth=use_butterworth_smoothed,
+                )
+                if use_standard_scaler
+                else None
+            )
 
             train_dataset = SiameseGaitDatasetRawMultipleDatasets(
                 selected_participants=train_participants,
@@ -456,7 +484,7 @@ class CrossValidationSiameseMultipleDs:
             self._logger.info("Train dataset size: %r", len(train_dataset))
             self._logger.info("Test dataset size: %r", len(test_dataset))
 
-            trained_model = self._single_train_iteration(
+            trained_model, stopped_at = self._single_train_iteration(
                 train_dataset=train_dataset,
                 siamese_nn_type=siamese_nn_type,
                 optimizer_type=optimizer_type,
@@ -473,7 +501,13 @@ class CrossValidationSiameseMultipleDs:
                 test_dataset=test_dataset,
             )
 
-            self._calculate_evaluation_metrics(
+            auroc = self._plot_pr_and_roc_curve(
+                y_pred_values=[min(value, 1) for value in y_pred_values],
+                y_true_values=y_true_values,
+                show_plot=show_plot,
+            )
+
+            accuracy, precision, recall = self._calculate_evaluation_metrics(
                 y_true_values=y_true_values,
                 y_pred_values=y_pred_values,
                 show_plot=show_plot,
@@ -532,6 +566,18 @@ class CrossValidationSiameseMultipleDs:
 
             rank_classification_results.append(results)
             test_sets_sizes.append(len(test_labels))
+
+            fold_summarize = {
+                "iteration": iteration,
+                "stopped_at": stopped_at,
+                "accuracy": accuracy,
+                "precision": precision,
+                "recall": recall,
+                "auroc": auroc,
+                "rank_results": results,
+            }
+
+            training_summarize["folds"].append(fold_summarize)
 
         # summarize Siamese training
 
@@ -607,10 +653,18 @@ class CrossValidationSiameseMultipleDs:
         )
         self._logger.info("%s", "-" * 50)
 
+        best_rank_1 = (0, "")
+        calculated_combined_results = {}
+
         for clf_name, combined_accuracies in combined_results.items():
             avg_weighted_accuracies = [
                 100 * acc / sum(test_sets_sizes) for acc in combined_accuracies
             ]
+
+            calculated_combined_results[clf_name] = avg_weighted_accuracies
+
+            if avg_weighted_accuracies[0] > best_rank_1[0]:
+                best_rank_1 = (avg_weighted_accuracies[0], clf_name)
             # converted to % and format easier to use in overleaf
             self._logger.info(
                 "%-10s & %.2f      & %.2f      & %.2f",
@@ -619,5 +673,20 @@ class CrossValidationSiameseMultipleDs:
                 avg_weighted_accuracies[1],
                 avg_weighted_accuracies[2],
             )
-
         self._logger.info("*" * 50)
+
+        training_summarize["combined"] = {
+            "accuracy": accuracy,
+            "precision": precision,
+            "recall": recall,
+            "auroc": auroc,
+            "rank_results": calculated_combined_results,
+            "best_rank_1": best_rank_1,
+        }
+
+        with open(
+            f"./json_reports/{self._logger.name}.json", "w", encoding="utf-8"
+        ) as file:
+            json.dump(training_summarize, file, indent=4, ensure_ascii=False)
+
+        return best_rank_1

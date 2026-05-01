@@ -209,3 +209,11 @@ cython_debug/
 # openpose
 /openpose
 /openpose_output
+
+/json_reports
+/processed_diff_embedding_size
+/results_different_embedding_size
+
+*.zip
+
+/Untitled*
