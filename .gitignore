@@ -130,6 +130,7 @@ ENV/
 env.bak/
 venv.bak/
 env_mediapipe
+venv_wsl/
 
 # Spyder project settings
 .spyderproject
@@ -215,5 +216,6 @@ cython_debug/
 /results_different_embedding_size
 
 *.zip
+*.deb
 
 /Untitled*

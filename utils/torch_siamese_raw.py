@@ -11,6 +11,7 @@ from typing import Sequence, Mapping, Literal
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from sklearn.base import TransformerMixin
+from mamba_ssm import Mamba, Mamba2, Mamba3
 
 
 DATASET_PARAMETER_FILES = {
@@ -595,8 +596,8 @@ class SiameseGaitDatasetRawMultipleDatasets(Dataset):
                             # negative pair
                             self.data.append(
                                 (
-                                    rand_positive_ptcp_sample.T,
-                                    rand_negative_ptcp_sample.T,
+                                    rand_positive_ptcp_sample,
+                                    rand_negative_ptcp_sample,
                                     torch.tensor(1.0),
                                 )
                             )
@@ -725,7 +726,8 @@ class PositionalEncoding(nn.Module):
         pe = torch.zeros(max_len, d_model)
         position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
         div_term = torch.exp(
-            torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+            # torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model)
+            torch.arange(0, d_model, 2).float() * (-math.log(16.0) / d_model)
         )
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
@@ -756,10 +758,177 @@ class SiameseNetworkTransformer(nn.Module):
     def forward_once(self, x):
         x = self.pos_encoder(x)
         x = self.transformer(x)
-        # Global Average Pooling to cmpress 32 steps into 1 vector
         x = x.mean(dim=1)
 
         return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+
+
+class SiameseNetworkTransformerUpdated(nn.Module):
+    def __init__(self, input_size=16, embedding_size=10, nhead=4, num_layers=1):
+        super().__init__()
+
+        self.pos_encoder = PositionalEncoding(input_size)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=input_size,
+            nhead=nhead,
+            dim_feedforward=64,
+            dropout=0.3,
+            batch_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+
+        self.fc = nn.Linear(input_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.pos_encoder(x)
+        x = self.transformer(x)
+        x = x.mean(dim=1)
+
+        return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+
+
+class SiameseNetworkMamba(nn.Module):
+    def __init__(self, input_size=16, embedding_size=10, hidden_size=256):
+        super().__init__()
+        self.embedding_projection = nn.Linear(input_size, hidden_size)
+        self.mamba = Mamba(
+            d_model=hidden_size,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+        )
+
+        self.norm = nn.LayerNorm(hidden_size)
+        self.fc = nn.Linear(hidden_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.embedding_projection(x)
+        x = self.mamba(x)
+        x = self.norm(x)
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+    
+
+class SiameseNetworkMamba2(nn.Module):
+    def __init__(self, input_size=16, embedding_size=10, hidden_size=256):
+        super().__init__()
+        self.embedding_projection = nn.Linear(input_size, hidden_size)
+        self.mamba = Mamba(
+            d_model=hidden_size,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+        )
+
+        self.norm = nn.LayerNorm(hidden_size)
+        self.fc = nn.Linear(hidden_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.embedding_projection(x)
+        x = self.mamba(x)
+        x = self.norm(x)
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+    
+
+class SiameseNetworkMamba3(nn.Module):
+    def __init__(self, input_size=16, embedding_size=10, hidden_size=256):
+        super().__init__()
+        self.embedding_projection = nn.Linear(input_size, hidden_size)
+        self.mamba = Mamba3(
+            d_model=hidden_size,
+            d_state=16,
+            d_conv=4,
+            expand=2,
+        )
+
+        self.norm = nn.LayerNorm(hidden_size)
+        self.fc = nn.Linear(hidden_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.embedding_projection(x)
+        x = self.mamba(x)
+        x = self.norm(x)
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+    
+
+
+class SiameseNetworkMamba3Updated(nn.Module):
+    def __init__(self, input_size=16, embedding_size=10, hidden_size=256):
+        super().__init__()
+        self.embedding_projection = nn.Linear(input_size, hidden_size)
+        self.mamba = Mamba3(
+            d_model=hidden_size,
+            d_state=64,
+            headdim=64,
+            is_mimo=True,          
+            mimo_rank=2,
+            chunk_size=32,
+            is_outproj_norm=False, 
+            dtype=torch.bfloat16,
+        )
+
+        self.norm = nn.LayerNorm(hidden_size)
+        self.fc = nn.Linear(hidden_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.embedding_projection(x)
+        x = self.mamba(x)
+        x = self.norm(x)
+        x = x.mean(dim=1)
+        return self.fc(x)
+
+    def forward(self, x1, x2):
+        return self.forward_once(x1), self.forward_once(x2)
+    
+
+class SiameseNetworkMambaRes(nn.Module):
+    """
+    Updated version og mamba siamese NN with modified parameters and residual connections added
+    """
+    def __init__(self, input_size=16, embedding_size=10, hidden_size=256):
+        super().__init__()
+        self.embedding_projection = nn.Linear(input_size, hidden_size)
+        self.layers = nn.ModuleList([
+            Mamba(d_model=hidden_size, d_state=32, d_conv=4, expand=2),
+            Mamba(d_model=hidden_size, d_state=32, d_conv=4, expand=2),
+        ])
+        self.norm = nn.LayerNorm(hidden_size)
+        self.dropout = nn.Dropout(0.1)
+        self.fc = nn.Linear(hidden_size, embedding_size)
+
+    def forward_once(self, x):
+        x = self.embedding_projection(x)
+
+        for layer in self.layers:
+            residual = x
+            x = layer(x)
+            x = x + residual
+            x = self.norm(x)
+            
+        x = x.mean(dim=1)
+        x = self.dropout(x)
+        x = self.fc(x)
+        # x = F.normalize(x, p=2, dim=-1)
+        
+        return x
 
     def forward(self, x1, x2):
         return self.forward_once(x1), self.forward_once(x2)

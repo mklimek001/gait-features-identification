@@ -624,6 +624,7 @@ class CrossValidationSiameseRaw:
                     perplexity=tsne_perplexity,
                     plot_file_name=plot_file_name,
                 )
+                break # TODO remove after selecting data
 
             self._logger.info(
                 "Test set size for rank classification: %r", len(test_labels)

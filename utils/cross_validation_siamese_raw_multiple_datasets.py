@@ -2,6 +2,8 @@ import logging
 import sys
 import random
 import json
+import copy
+import time
 from typing import Mapping, Sequence, Tuple, Literal, Iterator
 from pathlib import Path
 
@@ -42,6 +44,12 @@ from utils.torch_siamese_raw import (
     SiameseNetworkConv1D,
     SiameseNetworkConv1DwithBactchNorm,
     SiameseNetworkTransformer,
+    SiameseNetworkTransformerUpdated,
+    SiameseNetworkMamba,
+    SiameseNetworkMambaRes,
+    SiameseNetworkMamba2,
+    SiameseNetworkMamba3,
+    SiameseNetworkMamba3Updated,
     ContrastiveLoss,
     compute_similarity,
     get_scaler,
@@ -186,13 +194,14 @@ class CrossValidationSiameseMultipleDs:
         self,
         train_dataset: SiameseGaitDatasetRaw,
         siamese_nn_type: Literal[
-            "conv1d", "conv1dbn", "lstm", "transformer"
+            "conv1d", "conv1dbn", "lstm", "transformer", "mamba", "mambares"
         ] = "conv1d",
         optimizer_type: Literal["adam", "adamw", "rmsprop"] = "adam",
         learning_rate: float = 1e-4,
         batch_size: int = 32,
         n_epochs: int = 10,
         embedding_size: int = 10,
+        early_stop_patience: int = 3,
     ) -> torch.nn.Module:
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -206,14 +215,40 @@ class CrossValidationSiameseMultipleDs:
             model = SiameseNetworkTransformer(
                 input_size=self.features_number, embedding_size=embedding_size
             )
+        elif siamese_nn_type == "transformerupdated":
+            model = SiameseNetworkTransformerUpdated(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
+        elif siamese_nn_type == "conv1":
+            model = SiameseNetworkConv1D(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
         elif siamese_nn_type == "conv1dbn":
             model = SiameseNetworkConv1DwithBactchNorm(
                 input_size=self.features_number, embedding_size=embedding_size
             )
-        else:
-            model = SiameseNetworkConv1D(
+        elif siamese_nn_type == "mamba":
+            model = SiameseNetworkMamba(
                 input_size=self.features_number, embedding_size=embedding_size
             )
+        elif siamese_nn_type == "mamba2":
+            model = SiameseNetworkMamba2(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
+        elif siamese_nn_type == "mamba3":
+            model = SiameseNetworkMamba3(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
+        elif siamese_nn_type == "mamba3updated":
+            model = SiameseNetworkMamba3Updated(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
+        elif siamese_nn_type == "mambares":
+            model = SiameseNetworkMambaRes(
+                input_size=self.features_number, embedding_size=embedding_size
+            )
+        else:
+            raise ValueError(f"{siamese_nn_type} is not a supported model type")
 
         model.to(device)
 
@@ -230,8 +265,13 @@ class CrossValidationSiameseMultipleDs:
         else:
             optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
 
-        last_epochs = deque([], maxlen=5)
+        last_epochs = deque([], maxlen=early_stop_patience)
         stopped_at = n_epochs
+
+        best_model_state = copy.deepcopy(model.state_dict())
+        best_loss = float("inf")
+
+        start_train_time = time.time()
 
         for epoch in range(n_epochs):
             train_dataset.regenerate_pairs()
@@ -239,7 +279,7 @@ class CrossValidationSiameseMultipleDs:
                 train_dataset,
                 batch_size=batch_size,
                 shuffle=True,
-                pin_memory=True if device.type == "cuda" else False,  # Optimization
+                pin_memory=True if device.type == "cuda" else False,
             )
 
             model.train()
@@ -257,16 +297,30 @@ class CrossValidationSiameseMultipleDs:
 
             self._logger.info("Epoch %r, Train Loss: %r", epoch + 1, epoch_loss)
 
-            if len(last_epochs) == 5 and epoch_loss > min(last_epochs):
-                stopped_at = epoch + 1
-                self._logger.info("Training stopped at %s", stopped_at)
-                break
+            if epoch_loss < best_loss:
+                best_loss = epoch_loss
+                best_model_state = copy.deepcopy(model.state_dict())
 
-            last_epochs.append(epoch_loss)
+            if len(last_epochs) == early_stop_patience:
+                n_epochs_ago = last_epochs.popleft()
+                last_epochs.append(epoch_loss)
 
+                if n_epochs_ago < min(last_epochs):
+                    stopped_at = epoch + 1
+                    self._logger.info("Training stopped at %s", stopped_at)
+                    break
+            else:
+                last_epochs.append(epoch_loss)
+
+        end_train_time = time.time()
+
+        # restore best model before return
+        model.load_state_dict(best_model_state)
         model.eval()
 
-        return model, stopped_at
+        training_time = end_train_time - start_train_time
+
+        return model, stopped_at, training_time
 
     def _single_train_evaluation(
         self,
@@ -411,7 +465,7 @@ class CrossValidationSiameseMultipleDs:
             "MIX_ALL", "SKELETON_TYPE", "DATASET_TYPE"
         ] = "MIX_ALL",
         siamese_nn_type: Literal[
-            "conv1d", "conv1dbn", "lstm", "transformer"
+            "conv1d", "conv1dbn", "lstm", "transformer", "mamba", "mambares"
         ] = "conv1d",
         optimizer_type: Literal["adam", "adamw", "rmsprop"] = "adam",
         learning_rate: float = 1e-4,
@@ -424,6 +478,7 @@ class CrossValidationSiameseMultipleDs:
         csv_file_path: Path | str | None = None,
         use_butterworth_smoothed: bool = False,
         use_standard_scaler: bool = False,
+        early_stop_patience: int = 3,
     ):
         cummulated_y_true_values = []
         cummulated_y_pred_values = []
@@ -484,7 +539,7 @@ class CrossValidationSiameseMultipleDs:
             self._logger.info("Train dataset size: %r", len(train_dataset))
             self._logger.info("Test dataset size: %r", len(test_dataset))
 
-            trained_model, stopped_at = self._single_train_iteration(
+            trained_model, stopped_at, training_time = self._single_train_iteration(
                 train_dataset=train_dataset,
                 siamese_nn_type=siamese_nn_type,
                 optimizer_type=optimizer_type,
@@ -492,6 +547,7 @@ class CrossValidationSiameseMultipleDs:
                 batch_size=batch_size,
                 n_epochs=n_epochs,
                 embedding_size=embedding_size,
+                early_stop_patience=early_stop_patience,
             )
 
             # Siamese evaluation
@@ -528,6 +584,8 @@ class CrossValidationSiameseMultipleDs:
                 participants_id=test_participants, dataset_type=test_dataset_type
             )
 
+            start_eval_time = time.time()
+
             for ptcp_id, ptcp_features in zip(selected_ptcp_ids, selected_ptcp_params):
                 test_labels.append(ptcp_id)
                 ptcp_features_tensor = (
@@ -540,6 +598,9 @@ class CrossValidationSiameseMultipleDs:
                     .numpy()[0]
                 )
                 test_participants_embeddings.append(ptcp_features_embedding)
+
+            end_eval_time = time.time()
+            total_eval_time = end_eval_time - start_eval_time
 
             for test_label, embedding in zip(test_labels, test_participants_embeddings):
                 self._logger.debug(
@@ -568,6 +629,7 @@ class CrossValidationSiameseMultipleDs:
             test_sets_sizes.append(len(test_labels))
 
             fold_summarize = {
+                "training_time": training_time,
                 "iteration": iteration,
                 "stopped_at": stopped_at,
                 "accuracy": accuracy,
@@ -575,6 +637,8 @@ class CrossValidationSiameseMultipleDs:
                 "recall": recall,
                 "auroc": auroc,
                 "rank_results": results,
+                "evaluation_time": total_eval_time,
+                "evaluation_size": len(test_participants_embeddings)
             }
 
             training_summarize["folds"].append(fold_summarize)
